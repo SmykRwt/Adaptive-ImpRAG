@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 from typing import Dict, List, Optional
+import re
 
 import torch
 import torch.nn as nn
@@ -23,6 +24,7 @@ class PassageCache:
     attention_mask: torch.Tensor
     position_ids: torch.Tensor
     count: int
+    total_tokens: int
 
 
 def _repeat_kv(hidden_states: torch.Tensor, n_rep: int) -> torch.Tensor:
@@ -39,6 +41,54 @@ def _attn_num_heads(attn: nn.Module) -> int:
 
 def _attn_num_kv_heads(attn: nn.Module) -> int:
     return getattr(attn, "num_key_value_heads", getattr(attn.config, "num_key_value_heads"))
+
+
+def _apply_repetition_penalty(logits: torch.Tensor, generated: torch.Tensor, penalty: float) -> torch.Tensor:
+    if penalty <= 1.0:
+        return logits
+    adjusted = logits.clone()
+    for batch_idx in range(generated.size(0)):
+        seen_tokens = torch.unique(generated[batch_idx])
+        token_logits = adjusted[batch_idx, seen_tokens]
+        token_logits = torch.where(token_logits < 0, token_logits * penalty, token_logits / penalty)
+        adjusted[batch_idx, seen_tokens] = token_logits
+    return adjusted
+
+
+def _block_repeated_ngram(logits: torch.Tensor, generated: torch.Tensor, ngram_size: int) -> torch.Tensor:
+    if ngram_size <= 0 or generated.size(1) < ngram_size - 1:
+        return logits
+    adjusted = logits.clone()
+    prefix_length = ngram_size - 1
+    for batch_idx in range(generated.size(0)):
+        prefix = tuple(generated[batch_idx, -prefix_length:].tolist()) if prefix_length > 0 else tuple()
+        blocked_tokens = set()
+        tokens = generated[batch_idx].tolist()
+        for start in range(len(tokens) - ngram_size + 1):
+            ngram = tokens[start : start + ngram_size]
+            if tuple(ngram[:-1]) == prefix:
+                blocked_tokens.add(ngram[-1])
+        if blocked_tokens:
+            adjusted[batch_idx, list(blocked_tokens)] = torch.finfo(adjusted.dtype).min
+    return adjusted
+
+
+def _clean_short_answer(answer_text: str) -> str:
+    answer_text = answer_text.strip()
+    if not answer_text:
+        return answer_text
+    answer_text = answer_text.splitlines()[0].strip()
+    answer_text = re.split(r"[,:;!?()\[\]{}]", answer_text)[0].strip()
+    answer_text = re.split(r"\s+-\s+|-", answer_text)[0].strip()
+    pieces = answer_text.split()
+    if pieces and len(pieces) > 1:
+        collapsed = [pieces[0]]
+        for piece in pieces[1:]:
+            if piece.lower() == collapsed[-1].lower():
+                break
+            collapsed.append(piece)
+        answer_text = " ".join(collapsed)
+    return answer_text.strip()
 
 
 class ImpRAGModel(nn.Module):
@@ -185,31 +235,78 @@ class ImpRAGModel(nn.Module):
         strategy = strategy or self.config.passage_encoding_strategy
         if passage_input_ids.dim() != 2:
             raise ValueError("Expected passage_input_ids with shape [num_passages, seq_len]")
-        if strategy != "independent":
-            raise NotImplementedError(
-                "This base repo implements independent passage encoding first. "
-                "The paper also studies segmented and full-attention concatenation."
+        if strategy == "independent":
+            hidden_states = self._embed(passage_input_ids)
+            position_ids = self._position_ids(passage_attention_mask)
+            hidden_by_layer: Dict[int, torch.Tensor] = {}
+            for layer_idx in range(self.t + 1):
+                hidden_states = self._run_layer(self.layers[layer_idx], hidden_states, passage_attention_mask, position_ids)
+                if self.b <= layer_idx <= self.t:
+                    hidden_by_layer[layer_idx] = hidden_states.detach()
+
+            flat_attention_mask = passage_attention_mask.reshape(1, -1)
+            flat_position_ids = position_ids.reshape(1, -1)
+            flattened_hidden_by_layer = {
+                layer_idx: layer_hidden.reshape(1, -1, layer_hidden.size(-1))
+                for layer_idx, layer_hidden in hidden_by_layer.items()
+            }
+            return PassageCache(
+                hidden_by_layer=flattened_hidden_by_layer,
+                attention_mask=flat_attention_mask,
+                position_ids=flat_position_ids,
+                count=passage_input_ids.size(0),
+                total_tokens=int(flat_attention_mask.sum().item()),
             )
 
-        hidden_states = self._embed(passage_input_ids)
-        position_ids = self._position_ids(passage_attention_mask)
-        hidden_by_layer: Dict[int, torch.Tensor] = {}
-        for layer_idx in range(self.t + 1):
-            hidden_states = self._run_layer(self.layers[layer_idx], hidden_states, passage_attention_mask, position_ids)
-            if self.b <= layer_idx <= self.t:
-                hidden_by_layer[layer_idx] = hidden_states.detach()
+        if strategy == "full_attention":
+            packed_input_ids, packed_attention_mask, packed_position_ids = self._pack_passages_full_attention(
+                passage_input_ids,
+                passage_attention_mask,
+            )
+            hidden_states = self._embed(packed_input_ids)
+            hidden_by_layer = {}
+            for layer_idx in range(self.t + 1):
+                hidden_states = self._run_layer(self.layers[layer_idx], hidden_states, packed_attention_mask, packed_position_ids)
+                if self.b <= layer_idx <= self.t:
+                    hidden_by_layer[layer_idx] = hidden_states.detach()
 
-        flat_attention_mask = passage_attention_mask.reshape(1, -1)
-        flat_position_ids = position_ids.reshape(1, -1)
-        flattened_hidden_by_layer = {
-            layer_idx: layer_hidden.reshape(1, -1, layer_hidden.size(-1))
-            for layer_idx, layer_hidden in hidden_by_layer.items()
-        }
-        return PassageCache(
-            hidden_by_layer=flattened_hidden_by_layer,
-            attention_mask=flat_attention_mask,
-            position_ids=flat_position_ids,
-            count=passage_input_ids.size(0),
+            return PassageCache(
+                hidden_by_layer=hidden_by_layer,
+                attention_mask=packed_attention_mask,
+                position_ids=packed_position_ids,
+                count=passage_input_ids.size(0),
+                total_tokens=int(packed_attention_mask.sum().item()),
+            )
+
+        raise NotImplementedError(
+            "Unsupported passage encoding strategy. Use 'independent' or 'full_attention'."
+        )
+
+    def _pack_passages_full_attention(
+        self,
+        passage_input_ids: torch.Tensor,
+        passage_attention_mask: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        packed_ids = []
+        packed_mask = []
+        packed_positions = []
+        cursor = 0
+        for row_ids, row_mask in zip(passage_input_ids, passage_attention_mask):
+            valid_len = int(row_mask.sum().item())
+            if valid_len == 0:
+                continue
+            packed_ids.append(row_ids[:valid_len])
+            packed_mask.append(torch.ones(valid_len, dtype=row_mask.dtype, device=row_mask.device))
+            packed_positions.append(torch.arange(cursor, cursor + valid_len, device=row_ids.device, dtype=torch.long))
+            cursor += valid_len
+
+        if not packed_ids:
+            raise ValueError("No valid passage tokens were provided for full_attention encoding.")
+
+        return (
+            torch.cat(packed_ids, dim=0).unsqueeze(0),
+            torch.cat(packed_mask, dim=0).unsqueeze(0),
+            torch.cat(packed_positions, dim=0).unsqueeze(0),
         )
 
     def compute_retrieval_scores(self, query_embedding: torch.Tensor, passage_embeddings: torch.Tensor) -> torch.Tensor:
@@ -334,9 +431,14 @@ class ImpRAGModel(nn.Module):
         retriever,
         max_new_tokens: int = 64,
         top_k: Optional[int] = None,
+        repetition_penalty: float = 1.15,
+        no_repeat_ngram_size: int = 2,
+        stop_on_repeat: bool = True,
+        clean_answer: bool = True,
     ) -> Dict[str, object]:
         top_k = top_k or self.config.top_k
-        query_tokens = self.tokenizer(prompt, return_tensors="pt", truncation=True, max_length=self.config.max_query_length)
+        generation_prompt = f"{prompt}\nAnswer:"
+        query_tokens = self.tokenizer(generation_prompt, return_tensors="pt", truncation=True, max_length=self.config.max_query_length)
         query_tokens = {k: v.to(self.device) for k, v in query_tokens.items()}
         query_encoding = self.encode_query(query_tokens["input_ids"], query_tokens["attention_mask"])
         hits = retriever.search(query_encoding.query_embedding.detach().cpu().numpy(), top_k=top_k)[0]
@@ -356,20 +458,35 @@ class ImpRAGModel(nn.Module):
 
         generated = query_tokens["input_ids"]
         generated_mask = query_tokens["attention_mask"]
+        generated_answer_pieces: List[str] = []
         for _ in range(max_new_tokens):
             outputs = self.forward(
                 input_ids=generated,
                 attention_mask=generated_mask,
                 passage_cache=passage_cache,
             )
-            next_token = outputs["logits"][:, -1].argmax(dim=-1, keepdim=True)
+            next_token_logits = outputs["logits"][:, -1, :]
+            next_token_logits = _apply_repetition_penalty(next_token_logits, generated, repetition_penalty)
+            next_token_logits = _block_repeated_ngram(next_token_logits, generated, no_repeat_ngram_size)
+            next_token = next_token_logits.argmax(dim=-1, keepdim=True)
             generated = torch.cat([generated, next_token], dim=-1)
             generated_mask = torch.cat([generated_mask, torch.ones_like(next_token)], dim=-1)
+            token_text = self.tokenizer.decode(next_token[0], skip_special_tokens=True).strip()
+            if token_text:
+                generated_answer_pieces.append(token_text)
+            if stop_on_repeat and len(generated_answer_pieces) >= 2:
+                if generated_answer_pieces[-1] == generated_answer_pieces[-2]:
+                    break
             if next_token.item() == self.tokenizer.eos_token_id:
                 break
 
         text = self.tokenizer.decode(generated[0], skip_special_tokens=True)
+        answer_text = text[len(generation_prompt) :].strip() if text.startswith(generation_prompt) else text.strip()
+        cleaned_answer_text = _clean_short_answer(answer_text) if clean_answer else answer_text
         return {
             "text": text,
+            "answer_text": answer_text,
+            "cleaned_answer_text": cleaned_answer_text,
+            "prompt_text": generation_prompt,
             "retrieved_passages": hits,
         }

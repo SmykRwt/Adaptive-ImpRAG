@@ -1,7 +1,8 @@
-torch
-transformers
-datasets
-faiss-cpu
-accelerate
-tqdm
-numpy
+torch==2.9.1
+transformers==4.57.1
+datasets==4.4.1
+faiss-cpu==1.13.0
+accelerate==1.13.0
+tqdm==4.67.1
+numpy==2.3.0
+streamlit==1.46.1

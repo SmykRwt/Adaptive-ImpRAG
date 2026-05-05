@@ -28,6 +28,7 @@ class ImpRAGConfig:
     target_temperature: float = 1.0
     disable_top_cross_attention: bool = True
     passage_encoding_strategy: str = "independent"
+    experiment_name: str = "imprag-baseline"
     use_attention_queries_for_query_embedding: bool = True
     text_column: str = "query"
     answer_column: str = "answer"
