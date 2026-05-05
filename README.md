@@ -1,18 +1,75 @@
 # Adaptive ImpRAG
 
-`Adaptive ImpRAG` is an upgrade-friendly research scaffold for comparing a faithful `ImpRAG` baseline against improved variants under the **same retrieval corpus, same model family, and same evaluation setup**.
+Adaptive ImpRAG is a research scaffold for comparing:
 
-This repo now supports:
+- a baseline **ImpRAG** configuration
+- an improved **Adaptive ImpRAG** configuration
 
-- baseline `ImpRAG` with `independent` passage encoding
-- `Adaptive ImpRAG` with `full_attention` passage encoding for passage reading
-- JSONL passage corpora and FAISS retrieval indexes
-- Wikipedia-style subset preparation for storage-limited experiments
-- side-by-side evaluation and comparison scripts
+under the same:
+
+- retrieval corpus
+- model family
+- evaluation set
+
+The current main improvement is:
+
+- baseline: `passage_encoding_strategy = "independent"`
+- adaptive: `passage_encoding_strategy = "full_attention"`
+
+## What This Repo Contains
+
+Core package:
+
+- [`imprag/modeling_imprag.py`](imprag/modeling_imprag.py)
+- [`imprag/retrieval.py`](imprag/retrieval.py)
+- [`imprag/losses.py`](imprag/losses.py)
+- [`imprag/metrics.py`](imprag/metrics.py)
+- [`imprag/config.py`](imprag/config.py)
+
+Scripts:
+
+- [`scripts/prepare_wikipedia_subset.py`](scripts/prepare_wikipedia_subset.py)
+- [`scripts/prepare_qa_dataset.py`](scripts/prepare_qa_dataset.py)
+- [`scripts/build_faiss_index.py`](scripts/build_faiss_index.py)
+- [`scripts/build_retrieval_training_data.py`](scripts/build_retrieval_training_data.py)
+- [`scripts/train_imprag.py`](scripts/train_imprag.py)
+- [`scripts/infer_imprag.py`](scripts/infer_imprag.py)
+- [`scripts/evaluate_imprag.py`](scripts/evaluate_imprag.py)
+- [`scripts/compare_runs.py`](scripts/compare_runs.py)
+
+UI:
+
+- [`apps/streamlit_app.py`](apps/streamlit_app.py)
+
+Bootstrap helpers:
+
+- [`scripts/bootstrap_env.ps1`](scripts/bootstrap_env.ps1)
+- [`scripts/run_demo.ps1`](scripts/run_demo.ps1)
+- [`scripts/run_streamlit.ps1`](scripts/run_streamlit.ps1)
+
+Example configs:
+
+- [`examples/open_baseline_config.json`](examples/open_baseline_config.json)
+- [`examples/open_plus_config.json`](examples/open_plus_config.json)
+- [`examples/tiny_baseline_config.json`](examples/tiny_baseline_config.json)
+- [`examples/tiny_plus_config.json`](examples/tiny_plus_config.json)
+
+## What Database Is Used
+
+The original paper uses **Wikipedia** as the knowledge corpus.
+
+In this repo, the retrieval “database” is:
+
+1. a JSONL passage corpus
+2. a FAISS inner-product index built from that corpus
+
+For real experiments, use a Wikipedia-style corpus prepared with:
+
+- [`scripts/prepare_wikipedia_subset.py`](scripts/prepare_wikipedia_subset.py)
 
 ## Fresh Machine Setup
 
-If a collaborator clones this repo on another computer, they should be able to get running with:
+After cloning the repo, a collaborator should be able to run:
 
 ```powershell
 git clone <your-repo-url>
@@ -20,290 +77,85 @@ cd "Adaptive ImpRAG"
 powershell -ExecutionPolicy Bypass -File scripts\bootstrap_env.ps1
 ```
 
-Then they can either run the demo pipeline:
+Then either:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts\run_demo.ps1
 ```
 
-or launch the browser UI:
+or:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts\run_streamlit.ps1
 ```
 
-Important:
+Notes:
 
-- generated files in `outputs/` are intentionally ignored by git
-- large corpora in `corpora/` are also ignored by git
-- each collaborator should recreate indexes and trained checkpoints locally
+- generated artifacts in `outputs/` are ignored by git
+- larger corpora in `corpora/` are ignored by git
+- collaborators should recreate indexes and trained checkpoints locally
 
-## What database is used
+## Requirements
 
-In the original paper, the knowledge corpus is **Wikipedia**.
-
-In this repo, the retrieval "database" is:
-
-1. a passage corpus in JSONL format
-2. a FAISS inner-product index built from that corpus
-
-For real experiments, the intended corpus is a **Wikipedia-style passage collection**, ideally a KILT/DPR-style preprocessed version or a reproducible subset of it.
-
-## Baseline vs Adaptive ImpRAG
-
-Baseline config:
-- [examples/tiny_baseline_config.json](C:/Users/rawat/Desktop/Adaptive ImpRAG/examples/tiny_baseline_config.json)
-
-Plus config:
-- [examples/tiny_plus_config.json](C:/Users/rawat/Desktop/Adaptive ImpRAG/examples/tiny_plus_config.json)
-
-Open-model baseline config:
-- [examples/open_baseline_config.json](C:/Users/rawat/Desktop/Adaptive ImpRAG/examples/open_baseline_config.json)
-
-Open-model Adaptive config:
-- [examples/open_plus_config.json](C:/Users/rawat/Desktop/Adaptive ImpRAG/examples/open_plus_config.json)
-
-Main difference right now:
-
-- baseline uses `passage_encoding_strategy = "independent"`
-- `Adaptive ImpRAG` uses `passage_encoding_strategy = "full_attention"`
-
-That matches the paper’s finding that full-attention passage encoding is stronger than independent encoding.
-
-## Important files
-
-Core package:
-
-- [imprag/modeling_imprag.py](C:/Users/rawat/Desktop/Adaptive ImpRAG/imprag/modeling_imprag.py)
-- [imprag/retrieval.py](C:/Users/rawat/Desktop/Adaptive ImpRAG/imprag/retrieval.py)
-- [imprag/losses.py](C:/Users/rawat/Desktop/Adaptive ImpRAG/imprag/losses.py)
-- [imprag/metrics.py](C:/Users/rawat/Desktop/Adaptive ImpRAG/imprag/metrics.py)
-- [imprag/config.py](C:/Users/rawat/Desktop/Adaptive ImpRAG/imprag/config.py)
-
-Scripts:
-
-- [scripts/prepare_wikipedia_subset.py](C:/Users/rawat/Desktop/Adaptive ImpRAG/scripts/prepare_wikipedia_subset.py)
-- [scripts/build_faiss_index.py](C:/Users/rawat/Desktop/Adaptive ImpRAG/scripts/build_faiss_index.py)
-- [scripts/train_imprag.py](C:/Users/rawat/Desktop/Adaptive ImpRAG/scripts/train_imprag.py)
-- [scripts/infer_imprag.py](C:/Users/rawat/Desktop/Adaptive ImpRAG/scripts/infer_imprag.py)
-- [scripts/evaluate_imprag.py](C:/Users/rawat/Desktop/Adaptive ImpRAG/scripts/evaluate_imprag.py)
-- [scripts/compare_runs.py](C:/Users/rawat/Desktop/Adaptive ImpRAG/scripts/compare_runs.py)
-
-Toy/demo assets:
-
-- [examples/passages.jsonl](C:/Users/rawat/Desktop/Adaptive ImpRAG/examples/passages.jsonl)
-- [examples/train.jsonl](C:/Users/rawat/Desktop/Adaptive ImpRAG/examples/train.jsonl)
-
-## Install
+Install manually if you prefer:
 
 ```powershell
 python -m pip install -r requirements.txt
 ```
 
-Set the repo root on `PYTHONPATH` before running the scripts:
+Pinned dependencies are in [`requirements.txt`](requirements.txt) to reduce environment drift between machines.
 
-```powershell
-$env:PYTHONPATH='.'
-```
+## Open Model Used
 
-These dependencies are now pinned to the versions tested in this repo so collaborators are less likely to hit environment drift.
-
-## Recommended experiment plan
-
-### Step 1. Create a Wikipedia-style subset
-
-If the Hugging Face dataset is available, prepare a reproducible local subset:
-
-```powershell
-python scripts/prepare_wikipedia_subset.py `
-  --dataset-name kilt_wikipedia `
-  --split full `
-  --sample-size 50000 `
-  --seed 13 `
-  --streaming `
-  --append-title `
-  --output-path corpora/wiki_subset_50k.jsonl
-```
-
-If `kilt_wikipedia` fails because the current `datasets` library no longer supports dataset scripts, the script now automatically falls back to:
-
-- dataset: `wikimedia/wikipedia`
-- config: `20231101.en`
-- split: `train`
-
-It also supports custom `--id-column`, `--text-column`, and `--title-column` if you point it at another compatible dataset source.
-
-### Step 1b. Prepare a larger QA eval/train subset
-
-For a real comparison, move beyond the 2-example toy eval file. For example, prepare a 100-example Natural Questions subset:
-
-```powershell
-python scripts/prepare_qa_dataset.py `
-  --dataset-name nq_open `
-  --split validation `
-  --dataset-format nq_open `
-  --sample-size 100 `
-  --output-path corpora/nq_eval_100.jsonl
-```
-
-Or a HotpotQA subset:
-
-```powershell
-python scripts/prepare_qa_dataset.py `
-  --dataset-name hotpot_qa `
-  --dataset-config distractor `
-  --split validation `
-  --dataset-format hotpotqa `
-  --sample-size 100 `
-  --output-path corpora/hotpot_eval_100.jsonl
-```
-
-### Step 1c. Build retrieval-style training data from the harder corpus
-
-Once you have a Wikipedia-style index and a QA subset, build candidate-passage examples for training:
-
-```powershell
-python scripts/build_retrieval_training_data.py `
-  --config examples/open_baseline_config.json `
-  --index-path outputs/wiki_subset_50k.index `
-  --metadata-path outputs/wiki_subset_50k_meta.json `
-  --qa-jsonl corpora/nq_eval_100.jsonl `
-  --output-path corpora/nq_train_candidates_100.jsonl
-```
-
-This gives you a much more meaningful training/eval file than the toy handwritten examples.
-
-### Step 2. Build the FAISS index
-
-```powershell
-python scripts/build_faiss_index.py `
-  --config examples/tiny_baseline_config.json `
-  --passages corpora/wiki_subset_50k.jsonl `
-  --index-path outputs/wiki_subset_50k.index `
-  --metadata-path outputs/wiki_subset_50k_meta.json
-```
-
-You can also build a small sampled index directly from a larger local JSONL:
-
-```powershell
-python scripts/build_faiss_index.py `
-  --config examples/tiny_baseline_config.json `
-  --passages corpora/wiki_subset_50k.jsonl `
-  --sample-size 10000 `
-  --seed 13 `
-  --index-path outputs/wiki_subset_10k.index `
-  --metadata-path outputs/wiki_subset_10k_meta.json
-```
-
-### Step 3. Train baseline ImpRAG
-
-```powershell
-python scripts/train_imprag.py `
-  --config examples/tiny_baseline_config.json `
-  --train-jsonl corpora/nq_train_candidates_100.jsonl `
-  --epochs 1 `
-  --warmup-epochs 1 `
-  --config-out outputs/baseline_config.json
-```
-
-### Step 4. Train Adaptive ImpRAG
-
-```powershell
-python scripts/train_imprag.py `
-  --config examples/tiny_plus_config.json `
-  --train-jsonl corpora/nq_train_candidates_100.jsonl `
-  --epochs 1 `
-  --warmup-epochs 1 `
-  --config-out outputs/plus_config.json
-```
-
-### Step 5. Evaluate baseline
-
-```powershell
-$env:PYTHONIOENCODING='utf-8'
-python scripts/evaluate_imprag.py `
-  --config outputs/baseline_config.json `
-  --index-path outputs/wiki_subset_50k.index `
-  --metadata-path outputs/wiki_subset_50k_meta.json `
-  --eval-jsonl corpora/nq_eval_100.jsonl `
-  --output-path outputs/baseline_eval.json `
-  --run-name baseline
-```
-
-### Step 6. Evaluate ImpRAG+
-
-```powershell
-python scripts/evaluate_imprag.py `
-  --config outputs/plus_config.json `
-  --index-path outputs/wiki_subset_50k.index `
-  --metadata-path outputs/wiki_subset_50k_meta.json `
-  --eval-jsonl corpora/nq_eval_100.jsonl `
-  --output-path outputs/plus_eval.json `
-  --run-name adaptive-imprag
-```
-
-### Step 7. Compare runs
-
-```powershell
-python scripts/compare_runs.py `
-  --baseline outputs/baseline_eval.json `
-  --candidate outputs/plus_eval.json
-```
-
-## Open model to use
-
-For real local experiments without a gated checkpoint, use:
+For practical local experiments without a gated model, this repo uses:
 
 ```text
 TinyLlama/TinyLlama-1.1B-Chat-v1.0
 ```
 
-Why this model:
+Why:
 
-- it is open
-- it uses the LLaMA architecture, which matches the current implementation
-- it is much more meaningful than the random smoke-test model
-- it is still small enough to be practical on limited hardware compared with 3B+ models
+- open access
+- LLaMA-style architecture
+- much more meaningful than a random smoke-test model
+- still feasible on limited hardware compared with larger checkpoints
 
-## How to run with the open model
+## Quick Start
 
-### Build index
+### Option A: One-command demo
 
 ```powershell
-python scripts/build_faiss_index.py `
-  --config examples/open_baseline_config.json `
-  --passages examples/passages.jsonl `
-  --index-path outputs/open_demo.index `
-  --metadata-path outputs/open_demo_meta.json
+powershell -ExecutionPolicy Bypass -File scripts\run_demo.ps1
 ```
 
-### Train baseline
+This will:
+
+1. build a tiny FAISS demo index
+2. train baseline on toy data
+3. train Adaptive ImpRAG on toy data
+4. run one inference example
+
+### Option B: Browser UI
 
 ```powershell
-python scripts/train_imprag.py `
-  --config examples/open_baseline_config.json `
-  --train-jsonl examples/train.jsonl `
-  --epochs 1 `
-  --warmup-epochs 1 `
-  --model-output-dir outputs/open_baseline `
-  --config-out outputs/open_baseline_config_out.json
+powershell -ExecutionPolicy Bypass -File scripts\run_streamlit.ps1
 ```
 
-### Train Adaptive ImpRAG
+Then open the local URL shown by Streamlit and click `Compare Models`.
+
+The UI compares:
+
+- baseline ImpRAG
+- Adaptive ImpRAG
+
+side by side for the same question.
+
+## CLI Inference
+
+Once you have a trained config and an index, run:
 
 ```powershell
-python scripts/train_imprag.py `
-  --config examples/open_plus_config.json `
-  --train-jsonl examples/train.jsonl `
-  --epochs 1 `
-  --warmup-epochs 1 `
-  --model-output-dir outputs/open_plus `
-  --config-out outputs/open_plus_config_out.json
-```
-
-### Inference with the open model
-
-```powershell
+$env:PYTHONPATH='.'
 $env:PYTHONIOENCODING='utf-8'
 python scripts/infer_imprag.py `
   --config outputs/open_plus_config_out.json `
@@ -311,99 +163,176 @@ python scripts/infer_imprag.py `
   --metadata-path outputs/open_demo_meta.json `
   --query "What is the capital of France?" `
   --top-k 2 `
-  --max-new-tokens 16
+  --max-new-tokens 3
 ```
 
-The CLI now returns both:
+The result includes:
 
 - `answer_text`: raw generated answer
-- `cleaned_answer_text`: short-answer cleaned output for factoid QA
+- `cleaned_answer_text`: cleaned short answer for factoid QA
+- `retrieved_passages`
 
-And evaluation now reports both:
+## Real Experiment Workflow
 
-- `exact_match`: raw-answer exact match
-- `cleaned_exact_match`: exact match after answer cleaning
+### 1. Prepare a Wikipedia subset
 
-## Browser UI
+Example:
 
-If you prefer not to type questions directly into the terminal, there is now a Streamlit app:
+```powershell
+python scripts/prepare_wikipedia_subset.py `
+  --dataset-name kilt_wikipedia `
+  --split full `
+  --sample-size 2000 `
+  --seed 13 `
+  --streaming `
+  --append-title `
+  --output-path corpora/wiki_subset_2k.jsonl
+```
+
+If `kilt_wikipedia` fails because the current `datasets` library no longer supports dataset-script repos, the script automatically falls back to:
+
+- dataset: `wikimedia/wikipedia`
+- config: `20231101.en`
+- split: `train`
+
+### 2. Build the FAISS index
+
+```powershell
+python scripts/build_faiss_index.py `
+  --config examples/open_baseline_config.json `
+  --passages corpora/wiki_subset_2k.jsonl `
+  --index-path outputs/wiki_subset_2k.index `
+  --metadata-path outputs/wiki_subset_2k_meta.json
+```
+
+### 3. Prepare a QA subset
+
+Example with Natural Questions:
+
+```powershell
+python scripts/prepare_qa_dataset.py `
+  --dataset-name nq_open `
+  --split validation `
+  --dataset-format nq_open `
+  --sample-size 25 `
+  --output-path corpora/nq_eval_25.jsonl
+```
+
+### 4. Build retrieval training data
+
+```powershell
+python scripts/build_retrieval_training_data.py `
+  --config examples/open_baseline_config.json `
+  --index-path outputs/wiki_subset_2k.index `
+  --metadata-path outputs/wiki_subset_2k_meta.json `
+  --qa-jsonl corpora/nq_eval_25.jsonl `
+  --output-path corpora/nq_train_candidates_25.jsonl
+```
+
+### 5. Train baseline ImpRAG
+
+```powershell
+python scripts/train_imprag.py `
+  --config examples/open_baseline_config.json `
+  --train-jsonl corpora/nq_train_candidates_25.jsonl `
+  --epochs 1 `
+  --warmup-epochs 1 `
+  --model-output-dir outputs/open_baseline_2k_25 `
+  --config-out outputs/open_baseline_2k_25_config_out.json
+```
+
+### 6. Train Adaptive ImpRAG
+
+```powershell
+python scripts/train_imprag.py `
+  --config examples/open_plus_config.json `
+  --train-jsonl corpora/nq_train_candidates_25.jsonl `
+  --epochs 1 `
+  --warmup-epochs 1 `
+  --model-output-dir outputs/open_plus_2k_25 `
+  --config-out outputs/open_plus_2k_25_config_out.json
+```
+
+### 7. Evaluate baseline
+
+```powershell
+python scripts/evaluate_imprag.py `
+  --config outputs/open_baseline_2k_25_config_out.json `
+  --index-path outputs/wiki_subset_2k.index `
+  --metadata-path outputs/wiki_subset_2k_meta.json `
+  --eval-jsonl corpora/nq_eval_25.jsonl `
+  --output-path outputs/open_baseline_2k_25_eval.json `
+  --run-name original-imprag-2k-25
+```
+
+### 8. Evaluate Adaptive ImpRAG
+
+```powershell
+python scripts/evaluate_imprag.py `
+  --config outputs/open_plus_2k_25_config_out.json `
+  --index-path outputs/wiki_subset_2k.index `
+  --metadata-path outputs/wiki_subset_2k_meta.json `
+  --eval-jsonl corpora/nq_eval_25.jsonl `
+  --output-path outputs/open_plus_2k_25_eval.json `
+  --run-name adaptive-imprag-2k-25
+```
+
+### 9. Compare both runs
+
+```powershell
+python scripts/compare_runs.py `
+  --baseline outputs/open_baseline_2k_25_eval.json `
+  --candidate outputs/open_plus_2k_25_eval.json
+```
+
+## Metrics
+
+Evaluation currently reports:
+
+- `exact_match`
+- `cleaned_exact_match`
+- `retrieval_recall_at_k`
+
+When generation is slightly noisy, `cleaned_exact_match` is often the more useful first comparison.
+
+## Streamlit Comparison
+
+The Streamlit app compares both models side by side and shows:
+
+- cleaned answer
+- raw answer
+- prompt used
+- retrieved passages
+- top-passage score summary
+
+Run:
 
 ```powershell
 streamlit run apps/streamlit_app.py
 ```
 
-Then open the local URL Streamlit shows in the terminal, enter your question, and click `Compare Models`.
+## Current Limitations
 
-This is a good idea for your project because it makes testing much easier:
+- CPU training is slow, especially for the Adaptive configuration
+- toy configs are only for smoke testing
+- the repo still uses a simple greedy decoding loop
+- current experiments are reduced-scale reproductions, not paper-scale training
 
-- you can type questions naturally
-- you can compare baseline and Adaptive ImpRAG in one screen
-- you can see retrieved passages beside each answer
-- you can compare raw vs cleaned answers quickly
-- it is much easier to demo than terminal-only input
+## Recommended GitHub Practice
 
-## How to run the current tiny smoke test
+Commit:
 
-### Build toy index
+- source code
+- configs
+- scripts
+- Streamlit app
+- README
+- `.gitignore`
 
-```powershell
-python scripts/build_faiss_index.py `
-  --config examples/tiny_baseline_config.json `
-  --passages examples/passages.jsonl `
-  --index-path outputs/demo.index `
-  --metadata-path outputs/demo_passages.json
-```
+Do not rely on committing:
 
-### Baseline training
+- `outputs/*`
+- `corpora/*`
+- `__pycache__/*`
 
-```powershell
-python scripts/train_imprag.py `
-  --config examples/tiny_baseline_config.json `
-  --train-jsonl examples/train.jsonl `
-  --epochs 1 `
-  --warmup-epochs 1 `
-  --model-output-dir outputs/tiny_baseline `
-  --config-out outputs/tiny_baseline_config_out.json
-```
-
-### Adaptive ImpRAG training
-
-```powershell
-python scripts/train_imprag.py `
-  --config examples/tiny_plus_config.json `
-  --train-jsonl examples/train.jsonl `
-  --epochs 1 `
-  --warmup-epochs 1 `
-  --model-output-dir outputs/tiny_plus `
-  --config-out outputs/tiny_plus_config_out.json
-```
-
-### Inference
-
-```powershell
-$env:PYTHONIOENCODING='utf-8'
-python scripts/infer_imprag.py `
-  --config outputs/tiny_plus_config_out.json `
-  --index-path outputs/demo.index `
-  --metadata-path outputs/demo_passages.json `
-  --query "What is the capital of France?" `
-  --top-k 2 `
-  --max-new-tokens 16
-```
-
-## Current limitations
-
-- The training/eval examples are still toy examples; real comparison requires real retrieval datasets.
-- The default tiny configs still use a random tiny Llama model only for smoke testing.
-- For real results, use the new open configs or a gated checkpoint plus a Wikipedia-style corpus.
-- The repo still uses simple greedy decoding and does not yet include production-grade KV caching.
-
-## Best next move
-
-For a meaningful `ImpRAG` vs `Adaptive ImpRAG` comparison:
-
-1. prepare a fixed Wikipedia subset
-2. create a small NQ/HotpotQA-style train/eval file against that same subset
-3. train both baseline and plus on the same data
-4. compare `Exact Match` and `Retrieval Recall@k`
-5. pay special attention to `cleaned_exact_match` when raw generation is slightly noisy
+Those should be regenerated locally after cloning.
