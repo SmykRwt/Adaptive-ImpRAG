@@ -26,3 +26,9 @@ def retrieval_recall_at_k(answer_strings: Iterable[str], passages: Sequence[str]
         if normalized_answer and any(normalized_answer in passage for passage in normalized_passages):
             return 1.0
     return 0.0
+
+
+def mean(values: Sequence[float]) -> float:
+    if not values:
+        return 0.0
+    return float(sum(values) / len(values))

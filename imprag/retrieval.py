@@ -1,6 +1,7 @@
 import json
+import random
 from pathlib import Path
-from typing import Iterable, List, Sequence
+from typing import Iterable, List, Optional, Sequence
 
 import faiss
 import numpy as np
@@ -69,6 +70,20 @@ def load_passages(path: str) -> List[dict]:
                 continue
             passages.append(json.loads(line))
     return passages
+
+
+def sample_passages(
+    passages: Sequence[dict],
+    sample_size: Optional[int] = None,
+    seed: int = 13,
+) -> List[dict]:
+    if sample_size is None or sample_size >= len(passages):
+        return list(passages)
+    rng = random.Random(seed)
+    indices = list(range(len(passages)))
+    rng.shuffle(indices)
+    indices = sorted(indices[:sample_size])
+    return [passages[idx] for idx in indices]
 
 
 def write_jsonl(path: str, rows: Iterable[dict]) -> None:

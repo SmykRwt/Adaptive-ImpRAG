@@ -16,6 +16,7 @@ def parse_args():
     parser.add_argument("--config", type=str, default=None)
     parser.add_argument("--train-jsonl", type=str, required=True)
     parser.add_argument("--config-out", type=str, default="outputs/imprag_config.json")
+    parser.add_argument("--model-output-dir", type=str, default=None)
     parser.add_argument("--model-name", type=str, default="meta-llama/Llama-3.2-3B")
     parser.add_argument("--epochs", type=int, default=10)
     parser.add_argument("--warmup-epochs", type=int, default=3)
@@ -62,7 +63,8 @@ def main():
         config.retrieval_loss_weight = args.retrieval_loss_weight
         config.max_query_length = args.max_query_length
         config.max_passage_length = args.max_passage_length
-        config.output_dir = str(Path(args.config_out).parent)
+        if args.model_output_dir:
+            config.output_dir = args.model_output_dir
     else:
         config = ImpRAGConfig(
             model_name_or_path=args.model_name,
@@ -72,7 +74,7 @@ def main():
             retrieval_loss_weight=args.retrieval_loss_weight,
             max_query_length=args.max_query_length,
             max_passage_length=args.max_passage_length,
-            output_dir=str(Path(args.config_out).parent),
+            output_dir=args.model_output_dir or str(Path(args.config_out).parent),
         )
 
     rows = load_rows(args.train_jsonl)
@@ -141,9 +143,10 @@ def main():
             )
 
     Path(config.output_dir).mkdir(parents=True, exist_ok=True)
-    config.save_json(args.config_out)
     model.lm.save_pretrained(config.output_dir)
     model.tokenizer.save_pretrained(config.output_dir)
+    config.model_name_or_path = config.output_dir
+    config.save_json(args.config_out)
     print(json.dumps({"config": args.config_out, "model_dir": config.output_dir}, indent=2))
 
 

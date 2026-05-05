@@ -7,7 +7,7 @@ import torch
 from tqdm import tqdm
 
 from imprag import FaissRetriever, ImpRAGConfig, ImpRAGModel
-from imprag.retrieval import load_passages
+from imprag.retrieval import load_passages, sample_passages
 
 
 def parse_args():
@@ -18,6 +18,8 @@ def parse_args():
     parser.add_argument("--index-path", type=str, required=True)
     parser.add_argument("--metadata-path", type=str, required=True)
     parser.add_argument("--batch-size", type=int, default=16)
+    parser.add_argument("--sample-size", type=int, default=None)
+    parser.add_argument("--seed", type=int, default=13)
     return parser.parse_args()
 
 
@@ -28,7 +30,7 @@ def main():
     model.eval()
     model.to("cuda" if torch.cuda.is_available() else "cpu")
 
-    passages = load_passages(args.passages)
+    passages = sample_passages(load_passages(args.passages), sample_size=args.sample_size, seed=args.seed)
     embeddings = []
     ids = []
     texts = []
