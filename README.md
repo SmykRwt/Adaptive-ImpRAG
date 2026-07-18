@@ -1,25 +1,29 @@
 # 🧠 Adaptive ImpRAG (Implicit Retrieval-Augmented Generation)
 
-This repository contains a **paper-faithful baseline implementation** of the original **ImpRAG (Implicit Retrieval-Augmented Generation)** paper. It is designed to run efficiently on local hardware CPU/GPU resources (tested on standard 16GB RAM laptops) using a sliced **Qwen-2.5-1.5B** architecture.
+This repository contains a **paper-faithful baseline implementation** of the original **ImpRAG (Implicit Retrieval-Augmented Generation)** paper. It is designed to run efficiently on GPU resources using a sliced **Llama-3-3B** (`meta-llama/Llama-3.2-3B-Instruct`) architecture with dynamic layer slicing for larger/smaller models.
 
 ---
 
-## 📋 Architectural Overview
+## 📋 Architectural & Training Overview
 
-The codebase slices the 28-layer transformer model into three distinct functional groups, exactly matching the inference pipeline in Section 3.1 of the paper:
+The codebase slices the transformer model into three distinct functional groups, matching the inference pipeline in Section 3.1 of the paper:
 
 1. **Bottom Layers ($L_B$: Layers $0 \dots 14$)**: 
    * Acts as the **Retriever**.
-   * Hooks into the `q_proj` and `k_proj` attention modules at layer $b=14$.
-   * Applies **Grouped-Query Attention (GQA) group-averaging** to reduce query representations from 1536 to **256 dimensions** (matching the key projection space).
-   * Applies **Mean-Pooling** over the active tokens to represent document and query semantics (preventing representation collapse on sentence-ending punctuation).
-   * Uses **Dual-Centering** (subtracting document and query space means) to align the representations in the vector space for cosine similarity.
+   * Hooks into the `q_proj` and `k_proj` attention modules at layer $b=14$ (dynamically shifts to $b=15$ for 32-layer Llama-3-8B).
+   * Applies **Grouped-Query Attention (GQA) group-averaging** to reduce query representations to **256 dimensions**.
+   * Uses **Dual-Centering** to align representations.
 2. **Middle Layers ($L_M$: Layers $15 \dots 19$)**: 
-   * Acts as the **Implicit Cache**.
-   * Encodes the top-$k$ retrieved passages and prepends their keys/values into the attention states of layers $15 \dots 19$ using a `DynamicCache` injection during the generation pass.
+   * Acts as the **Implicit Cache** (dynamically shifts to $15 \dots 23$ for Llama-3-8B).
+   * Encodes the top-$k$ retrieved passages and prepends their keys/values into the attention states of middle layers during generation.
 3. **Top Layers ($L_T$: Layers $20 \dots 27$)**: 
    * Acts as the **Generator (Reader)**.
    * Autoregressively generates the final answer using the enriched cache.
+
+### 🔄 In-Batch Negatives Training Dynamics
+The training loop utilizes **in-batch negatives** (exactly resembling the paper's execution details):
+* **InfoNCE Warmup**: Computes dot-product cosine similarity scores between all queries and positive passages in a batch, training the retriever via multi-class cross-entropy (where the diagonal element is the positive target).
+* **Self-Distillation (KL)**: Replicates the query caches over in-batch candidates to compute teacher generation perplexities, distilling the resulting soft target distribution directly to the retriever.
 
 ---
 
@@ -34,8 +38,7 @@ pip install -r requirements.txt
 ```
 
 ### 2. Download the Model Checkpoint
-Because the model weights folder is large (~3GB), it is excluded from GitHub. 
-* Teammates must download the `imp_rag_checkpoint` folder (or download the pre-trained `Qwen/Qwen2.5-1.5B-Instruct` configuration) and place it in the project root directory.
+* Teammates should download the `imp_rag_checkpoint` folder (or log in via `huggingface-cli login` to fetch `meta-llama/Llama-3.2-3B-Instruct`) and place it in the project root directory.
 
 ### 3. Place/Rebuild the FAISS Index
 * Ensure the 3 pre-built mean-pooled index files are in the root directory:
