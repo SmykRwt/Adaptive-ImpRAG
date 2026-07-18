@@ -1,8 +1,9 @@
 import json
+import argparse
 import torch
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
-from transformers import AutoTokenizer, AutoModelForCausalLM
+from transformers import AutoTokenizer, AutoModelForCausalLM, get_cosine_schedule_with_warmup
 from imprag.model import ImpRAGModel
 from imprag.dataset import ImpRAGDataset, collate_fn
 from imprag.trainer import ImpRAGTrainer
@@ -11,7 +12,7 @@ import numpy as np
 from tqdm import tqdm
 import os
 
-def index_corpus(model, tokenizer, passages, batch_size=16, device="cpu"):
+def index_corpus(model, tokenizer, passages, batch_size=128, device="cpu"):
     """
     Embeds the entire corpus using the model's bottom group L_B
     and indexes them in a FAISS index.
@@ -20,35 +21,48 @@ def index_corpus(model, tokenizer, passages, batch_size=16, device="cpu"):
     all_embeddings = []
     dimension = None
     
-    with torch.no_grad():
-        for i in tqdm(range(0, len(passages), batch_size), desc="FAISS Corpus Indexing"):
-            batch_texts = passages[i : i + batch_size]
-            encoding = tokenizer(batch_texts, padding=True, truncation=True, max_length=64, return_tensors="pt")
-            passage_ids = encoding.input_ids.to(device)
-            passage_mask = encoding.attention_mask.to(device)
-            
-            # Extract passage embeddings using the key projections at layer b
-            emb = model.get_retriever_embeddings(passage_ids, attention_mask=passage_mask, is_query=False)
-            
-            # Normalize embeddings to unit vectors for cosine similarity
-            emb_norm = F.normalize(emb, p=2, dim=-1)
-            
-            if dimension is None:
-                dimension = emb_norm.shape[-1]
+    original_layers = model.base_model.model.layers
+    model.base_model.model.layers = original_layers[:model.b + 1]
+    
+    try:
+        with torch.no_grad():
+            for i in tqdm(range(0, len(passages), batch_size), desc="FAISS Corpus Indexing"):
+                batch_texts = passages[i : i + batch_size]
+                encoding = tokenizer(batch_texts, padding=True, truncation=True, max_length=64, return_tensors="pt")
+                passage_ids = encoding.input_ids.to(device)
+                passage_mask = encoding.attention_mask.to(device)
                 
-            all_embeddings.append(emb_norm.float().cpu().numpy())
+                emb = model.get_retriever_embeddings(passage_ids, attention_mask=passage_mask, is_query=False)
+                emb_norm = F.normalize(emb, p=2, dim=-1)
+                
+                if dimension is None:
+                    dimension = emb_norm.shape[-1]
+                    
+                all_embeddings.append(emb_norm.float().cpu().numpy())
+    finally:
+        model.base_model.model.layers = original_layers
             
     all_embeddings = np.concatenate(all_embeddings, axis=0)
     
-    # Initialize and populate the FAISS index
     faiss_index = ImpRAGFAISSIndex(dimension)
     faiss_index.add_embeddings(all_embeddings)
     return faiss_index, all_embeddings
 
 def main():
+    parser = argparse.ArgumentParser(description="ImpRAG Large-Scale GPU Trainer")
+    parser.add_argument("--batch_size", type=int, default=4, help="Batch size per GPU forward pass")
+    parser.add_argument("--epochs", type=int, default=6, help="Total training epochs")
+    parser.add_argument("--warmup_epochs", type=int, default=2, help="Number of NCE warmup epochs")
+    parser.add_argument("--accumulation_steps", type=int, default=16, help="Gradient accumulation steps")
+    parser.add_argument("--lr", type=float, default=3e-5, help="Learning rate")
+    parser.add_argument("--use_amp", action="store_true", default=True, help="Use Automatic Mixed Precision (AMP)")
+    parser.add_argument("--pooling_type", type=str, default="last_token", choices=["last_token", "mean"], help="Pooling type for retrievals")
+    parser.add_argument("--num_workers", type=int, default=4, help="Data loader workers")
+    args = parser.parse_args()
+
     model_name = "Qwen/Qwen2.5-1.5B-Instruct"
     print("=" * 60)
-    print(f"ImpRAG Baseline Pipeline - {model_name.split('/')[-1]}")
+    print(f"ImpRAG GPU Scaled Pipeline - {model_name.split('/')[-1]}")
     print("=" * 60)
     
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -81,54 +95,71 @@ def main():
     print("Loading pre-trained Qwen2.5-1.5B-Instruct model & tokenizer...")
     tokenizer = AutoTokenizer.from_pretrained(model_name)
     tokenizer.pad_token = tokenizer.eos_token
-    # Keep right padding for labels mapping simplicity and use our mask-based pooling
     tokenizer.padding_side = "right"
     
-    base_model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.bfloat16)
+    base_model = AutoModelForCausalLM.from_pretrained(
+        model_name, 
+        torch_dtype=torch.bfloat16,
+        low_cpu_mem_usage=True
+    )
     
     # 3. Slice and wrap the model
-    # Qwen-2.5-1.5B has 28 layers. We set boundaries matching the paper's 28-layer setup:
-    # b = 7 (bottom layers 0..7)
-    # t = 19 (middle layers 7..19)
+    # b = 14 (bottom layers 0..14)
+    # t = 19 (middle layers 14..19)
     # top group LT layers 20..27
-    model = ImpRAGModel(base_model, b=7, t=19, k_passages=2, max_passage_len=64)
+    model = ImpRAGModel(base_model, b=14, t=19, k_passages=2, max_passage_len=64, pooling_type=args.pooling_type)
     model.to(device)
     
     # 4. Create Datasets and DataLoaders
     train_dataset = ImpRAGDataset(train_split)
     eval_dataset = ImpRAGDataset(eval_split)
     
-    # Smaller batch size to prevent memory warnings/out-of-memory on CPU
     train_loader = DataLoader(
         train_dataset,
-        batch_size=2,
+        batch_size=args.batch_size,
         shuffle=True,
+        num_workers=args.num_workers if device == "cuda" else 0,
+        pin_memory=True if device == "cuda" else False,
         collate_fn=lambda b: collate_fn(b, tokenizer, max_query_len=64, max_passage_len=64, num_candidates=5)
     )
     eval_loader = DataLoader(
         eval_dataset,
-        batch_size=2,
+        batch_size=args.batch_size,
         shuffle=False,
+        num_workers=args.num_workers if device == "cuda" else 0,
+        pin_memory=True if device == "cuda" else False,
         collate_fn=lambda b: collate_fn(b, tokenizer, max_query_len=64, max_passage_len=64, num_candidates=5)
     )
     
-    # 5. Initialize Optimizer and Trainer
+    # 5. Initialize Optimizer, Scheduler and Trainer
     from transformers.optimization import Adafactor
-    optimizer = Adafactor(model.parameters(), scale_parameter=False, relative_step=False, lr=3e-5)
+    optimizer = Adafactor(model.parameters(), scale_parameter=False, relative_step=False, lr=args.lr)
     
-    # 6 epochs total: 2 Warmup (NCE), 4 Distillation (KL)
+    # Setup linear warmup cosine decay scheduler
+    total_steps = (len(train_loader) * args.epochs) // args.accumulation_steps
+    warmup_steps = int(total_steps * 0.1)
+    scheduler = get_cosine_schedule_with_warmup(
+        optimizer, 
+        num_warmup_steps=warmup_steps, 
+        num_training_steps=total_steps
+    )
+    
+    print(f"Total training steps: {total_steps} (Warmup: {warmup_steps})")
+    
     trainer = ImpRAGTrainer(
         model=model,
         optimizer=optimizer,
-        warmup_epochs=2,
-        total_epochs=6,
+        warmup_epochs=args.warmup_epochs,
+        total_epochs=args.epochs,
         lambda_ret=1.0,
-        device=device
+        device=device,
+        accumulation_steps=args.accumulation_steps,
+        use_amp=args.use_amp,
+        scheduler=scheduler
     )
     
     # 6. Evaluation BEFORE training
     print("\nEvaluating Model BEFORE Training...")
-    # Evaluate with standard loader (compares to query candidates)
     pre_em, pre_recall = trainer.evaluate(eval_loader, tokenizer)
     print(f"Pre-training Candidate EM: {pre_em*100:.2f}%")
     print(f"Pre-training Candidate Retrieval Recall: {pre_recall*100:.2f}%")
@@ -141,12 +172,32 @@ def main():
         
     # 8. Index Corpus post-training using trained bottom layers (L_B)
     print("\nBuilding post-training FAISS Retrieval Index...")
-    faiss_index, corpus_embs = index_corpus(model, tokenizer, passages, batch_size=16, device=device)
+    faiss_index, corpus_embs = index_corpus(model, tokenizer, passages, batch_size=128, device=device)
     print(f"Successfully built FAISS index with {faiss_index.get_num_vectors()} vectors.")
     
     # Save the FAISS index
     faiss_index.save("imp_rag_wiki.index")
     print("FAISS index saved to imp_rag_wiki.index.")
+    
+    # Save document mean vector
+    p_mean = corpus_embs.mean(axis=0, keepdims=True)
+    np.save("imp_rag_wiki.index.mean.npy", p_mean)
+    print("Document mean vector saved.")
+    
+    # Compute and save query mean vector for dual-centering
+    print("Computing query mean vector for dual-centering...")
+    query_vectors = []
+    model.eval()
+    with torch.no_grad():
+        for item in train_data[:100]:
+            q_enc = tokenizer([item["query"]], return_tensors="pt")
+            E_q = model.get_retriever_embeddings(q_enc.input_ids.to(device), attention_mask=q_enc.attention_mask.to(device), is_query=True)
+            E_q_norm = F.normalize(E_q, p=2, dim=-1)[0].float().cpu().numpy()
+            query_vectors.append(E_q_norm)
+    query_vectors = np.array(query_vectors, dtype=np.float32)
+    mean_q = query_vectors.mean(axis=0, keepdims=True)
+    np.save("imp_rag_wiki.index.query_mean.npy", mean_q)
+    print("Query mean vector saved.")
     
     # 9. Evaluate AFTER training using the FAISS Index
     print("\nEvaluating Model AFTER Training (Full Corpus Retrieval via FAISS)...")
@@ -160,21 +211,22 @@ def main():
             query_text = item["query"]
             answer_text = item["answer"].strip().lower()
             
-            # Embed query prompt
             q_enc = tokenizer([query_text], return_tensors="pt")
             q_ids = q_enc.input_ids.to(device)
             q_mask = q_enc.attention_mask.to(device)
             
             E_q = model.get_retriever_embeddings(q_ids, attention_mask=q_mask, is_query=True)
-            # L2-normalize query embedding
             E_q_norm = F.normalize(E_q, p=2, dim=-1)
             E_q_np = E_q_norm.float().cpu().numpy()
             
+            # Apply dual-centering
+            E_q_centered = E_q_np - p_mean
+            E_q_centered /= np.linalg.norm(E_q_centered, axis=-1, keepdims=True)
+            
             # Query FAISS index for top-5 documents
-            distances, indices = faiss_index.search(E_q_np, k=5)
+            distances, indices = faiss_index.search(E_q_centered, k=5)
             ret_passages = [passages[idx] for idx in indices[0] if idx != -1]
             
-            # 1. Retrieval Recall: check if answer is a substring in retrieved passages
             has_answer = False
             for p in ret_passages:
                 if answer_text in p.lower():
@@ -183,16 +235,12 @@ def main():
             if has_answer:
                 retrieval_recalls += 1
                 
-            # 2. Generation EM
-            # Encode retrieved top-2 passages
             retrieved_passage_ids = tokenizer(ret_passages[:2], padding=True, truncation=True, max_length=64, return_tensors="pt").input_ids.to(device)
             custom_cache = model.encode_passages(retrieved_passage_ids)
             
-            # Generate answer
             gen_tokens = model.generate(q_ids, custom_cache, max_new_tokens=15)
             gen_text = tokenizer.decode(gen_tokens[0], skip_special_tokens=True).strip().lower()
             
-            # Check Exact Match
             if answer_text in gen_text or gen_text == answer_text:
                 exact_matches += 1
                 
@@ -215,21 +263,17 @@ def main():
     tokenizer.save_pretrained(checkpoint_dir)
     print("Checkpoint saved successfully!")
     
-    # Auto-copy to Google Drive if running in Colab
     if os.path.exists("/content/drive/MyDrive"):
         import shutil
         print("Google Drive connection detected! Backing up files to Google Drive root automatically...")
         try:
-            # Copy checkpoint folder
             drive_checkpoint_dir = "/content/drive/MyDrive/imp_rag_checkpoint"
             if os.path.exists(drive_checkpoint_dir):
                 shutil.rmtree(drive_checkpoint_dir)
             shutil.copytree(checkpoint_dir, drive_checkpoint_dir)
-            print("Checkpoint copied to Google Drive successfully!")
-            
-            # Copy FAISS index
             shutil.copy("imp_rag_wiki.index", "/content/drive/MyDrive/imp_rag_wiki.index")
-            print("FAISS Index copied to Google Drive successfully!")
+            shutil.copy("imp_rag_wiki.index.mean.npy", "/content/drive/MyDrive/imp_rag_wiki.index.mean.npy")
+            shutil.copy("imp_rag_wiki.index.query_mean.npy", "/content/drive/MyDrive/imp_rag_wiki.index.query_mean.npy")
             print("All assets backed up to your Google Drive root folder!")
         except Exception as e:
             print(f"Warning: Failed to copy to Google Drive automatically: {str(e)}")
