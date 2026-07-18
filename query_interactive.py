@@ -54,8 +54,20 @@ def main():
         low_cpu_mem_usage=True
     )
     
-    # Wrap model with ImpRAG layer boundaries (matching Qwen 28 layers)
-    model = ImpRAGModel(base_model, b=14, t=19, k_passages=2, max_passage_len=64)
+    # Slice and wrap the model dynamically based on number of layers
+    num_layers = base_model.config.num_hidden_layers
+    if num_layers == 32:
+        b = 15
+        t = 23
+    elif num_layers == 28:
+        b = 14
+        t = 19
+    else:
+        b = int(num_layers * 0.5)
+        t = int(num_layers * 0.7)
+        print(f"Warning: Unexpected layer count {num_layers}. Slicing: b={b}, t={t}")
+        
+    model = ImpRAGModel(base_model, b=b, t=t, k_passages=2, max_passage_len=64)
     model.to(device)
     model.eval()
     

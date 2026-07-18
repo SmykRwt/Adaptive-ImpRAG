@@ -113,7 +113,7 @@ class ImpRAGDataset(Dataset):
 
 def collate_fn(batch, tokenizer, max_query_len=128, max_passage_len=32, num_candidates=5):
     """
-    Collation function to prepare batch tensors.
+    Collation function to prepare batch tensors with in-batch negatives.
     """
     queries = [item["query"] for item in batch]
     answers = [item["answer"] for item in batch]
@@ -125,55 +125,27 @@ def collate_fn(batch, tokenizer, max_query_len=128, max_passage_len=32, num_cand
     full_sequences = [f"{q} {a}" for q, a in zip(queries, answers)]
     tokenized_full = tokenizer(full_sequences, padding=True, truncation=True, max_length=max_query_len + 32, return_tensors="pt")
     
-    # Create labels where all prompt tokens are marked as -100 (ignored in loss computation)
+    # Create labels where all prompt tokens are marked as -100
     labels = tokenized_full.input_ids.clone()
     for i in range(len(batch)):
         q_len = len(tokenizer.encode(queries[i]))
         labels[i, :q_len] = -100
-    
-    # Process passages for retrieval warmup and distillation
-    # We want a candidate set of size `num_candidates` per query
-    batch_pos_passages = []
-    batch_neg_passages = []
-    positive_mask = []
-    
+        
+    # Extract only the positive passage for each query
+    pos_passages = []
     for item in batch:
         pos = item["positive_passages"]
-        neg = item["negative_passages"]
-        
-        # Ensure we have at least one positive
         if len(pos) == 0:
-            pos = ["Dummy positive passage."]
-        if len(neg) == 0:
-            neg = ["Dummy negative passage."]
-            
-        # Select one positive and (num_candidates - 1) negatives
-        selected_pos = random.choice(pos)
-        
-        selected_negs = []
-        if len(neg) >= num_candidates - 1:
-            selected_negs = random.sample(neg, num_candidates - 1)
+            pos_passages.append("Dummy positive passage.")
         else:
-            # Pad negatives if not enough
-            selected_negs = neg + [random.choice(neg) for _ in range(num_candidates - 1 - len(neg))]
+            pos_passages.append(pos[0])
             
-        candidates = [selected_pos] + selected_negs
-        batch_pos_passages.append(selected_pos)
-        batch_neg_passages.extend(selected_negs)
-        
-        # In candidates list [pos, neg_1, neg_2, ...], the first one is positive
-        mask = [True] + [False] * (num_candidates - 1)
-        positive_mask.append(mask)
-        
     # Tokenize candidate passages
-    all_candidates = []
-    for i in range(len(batch)):
-        pos_passage = batch_pos_passages[i]
-        neg_passages = batch_neg_passages[i * (num_candidates - 1) : (i + 1) * (num_candidates - 1)]
-        all_candidates.append(pos_passage)
-        all_candidates.extend(neg_passages)
-        
-    tokenized_candidates = tokenizer(all_candidates, padding=True, truncation=True, max_length=max_passage_len, return_tensors="pt")
+    tokenized_candidates = tokenizer(pos_passages, padding=True, truncation=True, max_length=max_passage_len, return_tensors="pt")
+    
+    # Positive mask for in-batch negatives is the identity matrix [batch_size, batch_size]
+    batch_size = len(batch)
+    positive_mask = torch.eye(batch_size, dtype=torch.bool)
     
     return {
         "query_ids": tokenized_queries.input_ids,
@@ -183,5 +155,5 @@ def collate_fn(batch, tokenizer, max_query_len=128, max_passage_len=32, num_cand
         "labels": labels,
         "candidate_passage_ids": tokenized_candidates.input_ids,
         "candidate_passage_attention_mask": tokenized_candidates.attention_mask,
-        "positive_mask": torch.tensor(positive_mask, dtype=torch.bool)
+        "positive_mask": positive_mask
     }

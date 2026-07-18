@@ -39,8 +39,20 @@ def main():
         torch_dtype=torch.bfloat16, 
         low_cpu_mem_usage=True
     )
-    # Defaulting to mean pooling for robust zero-shot retrieval
-    model = ImpRAGModel(base_model, b=14, t=19, pooling_type="mean")
+    # Slice and wrap the model dynamically based on number of layers
+    num_layers = base_model.config.num_hidden_layers
+    if num_layers == 32:
+        b = 15
+        t = 23
+    elif num_layers == 28:
+        b = 14
+        t = 19
+    else:
+        b = int(num_layers * 0.5)
+        t = int(num_layers * 0.7)
+        print(f"Warning: Unexpected layer count {num_layers}. Slicing: b={b}, t={t}")
+        
+    model = ImpRAGModel(base_model, b=b, t=t, pooling_type="mean")
     model.eval()
     
     faiss_index = ImpRAGFAISSIndex.load(index_path)

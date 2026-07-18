@@ -50,6 +50,7 @@ def index_corpus(model, tokenizer, passages, batch_size=128, device="cpu"):
 
 def main():
     parser = argparse.ArgumentParser(description="ImpRAG Large-Scale GPU Trainer")
+    parser.add_argument("--model", type=str, default="meta-llama/Llama-3.2-3B-Instruct", help="Base model checkpoint to use")
     parser.add_argument("--batch_size", type=int, default=4, help="Batch size per GPU forward pass")
     parser.add_argument("--epochs", type=int, default=6, help="Total training epochs")
     parser.add_argument("--warmup_epochs", type=int, default=2, help="Number of NCE warmup epochs")
@@ -60,7 +61,7 @@ def main():
     parser.add_argument("--num_workers", type=int, default=4, help="Data loader workers")
     args = parser.parse_args()
 
-    model_name = "Qwen/Qwen2.5-1.5B-Instruct"
+    model_name = args.model
     print("=" * 60)
     print(f"ImpRAG GPU Scaled Pipeline - {model_name.split('/')[-1]}")
     print("=" * 60)
@@ -92,7 +93,7 @@ def main():
     print(f"Train split size: {len(train_split)}, Eval split size: {len(eval_split)}")
     
     # 2. Load model and tokenizer
-    print("Loading pre-trained Qwen2.5-1.5B-Instruct model & tokenizer...")
+    print(f"Loading pre-trained {model_name} model & tokenizer...")
     tokenizer = AutoTokenizer.from_pretrained(model_name)
     tokenizer.pad_token = tokenizer.eos_token
     tokenizer.padding_side = "right"
@@ -103,11 +104,21 @@ def main():
         low_cpu_mem_usage=True
     )
     
-    # 3. Slice and wrap the model
-    # b = 14 (bottom layers 0..14)
-    # t = 19 (middle layers 14..19)
-    # top group LT layers 20..27
-    model = ImpRAGModel(base_model, b=14, t=19, k_passages=2, max_passage_len=64, pooling_type=args.pooling_type)
+    # 3. Slice and wrap the model dynamically based on number of layers
+    num_layers = base_model.config.num_hidden_layers
+    if num_layers == 32:
+        b = 15
+        t = 23
+    elif num_layers == 28:
+        b = 14
+        t = 19
+    else:
+        b = int(num_layers * 0.5)
+        t = int(num_layers * 0.7)
+        print(f"Warning: Unexpected layer count {num_layers}. Falling back to proportional slicing: b={b}, t={t}")
+        
+    print(f"Model Slicing Boundaries: bottom layer group LB (0..{b}), middle group LM ({b}..{t}), top group LT ({t}..{num_layers-1})")
+    model = ImpRAGModel(base_model, b=b, t=t, k_passages=2, max_passage_len=64, pooling_type=args.pooling_type)
     model.to(device)
     
     # 4. Create Datasets and DataLoaders
