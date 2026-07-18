@@ -143,8 +143,26 @@ def main():
     )
     
     # 5. Initialize Optimizer, Scheduler and Trainer
+    # Freeze all parameters first
+    for param in model.parameters():
+        param.requires_grad = False
+        
+    # Unfreeze only q_proj and k_proj for retriever layers in bottom group LB (0..b)
+    unfrozen_count = 0
+    for layer_idx in range(b + 1):
+        layer = base_model.model.layers[layer_idx]
+        for param in layer.self_attn.q_proj.parameters():
+            param.requires_grad = True
+            unfrozen_count += 1
+        for param in layer.self_attn.k_proj.parameters():
+            param.requires_grad = True
+            unfrozen_count += 1
+            
+    print(f"Paper alignment: Froze all reader/generator weights. Unfroze {unfrozen_count} projection matrices in retriever group LB (Layers 0..{b}).")
+    
     from transformers.optimization import Adafactor
-    optimizer = Adafactor(model.parameters(), scale_parameter=False, relative_step=False, lr=args.lr)
+    trainable_params = [p for p in model.parameters() if p.requires_grad]
+    optimizer = Adafactor(trainable_params, scale_parameter=False, relative_step=False, lr=args.lr)
     
     # Setup linear warmup cosine decay scheduler
     total_steps = (len(train_loader) * args.epochs) // args.accumulation_steps
