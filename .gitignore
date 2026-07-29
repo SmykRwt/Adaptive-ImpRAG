@@ -16,11 +16,6 @@ build/
 # Large model checkpoints (do not push to GitHub)
 imp_rag_checkpoint/
 
-# Large data/index files
-wiki_passages.json
-train_dataset_with_pseudo_labels.json
-*.index
-
 # OS files
 .DS_Store
 Thumbs.db
