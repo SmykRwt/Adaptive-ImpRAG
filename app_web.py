@@ -33,11 +33,16 @@ def load_resources():
         
         # Load model & tokenizer
         tokenizer = AutoTokenizer.from_pretrained(checkpoint_dir)
-        tokenizer.pad_token = tokenizer.eos_token
+        if tokenizer.pad_token is None:
+            tokenizer.pad_token = tokenizer.eos_token
+        tokenizer.padding_side = "right"
+        
+        # Use bfloat16 for GPU, float32 for CPU to prevent CPU bfloat16 matrix multiplication crashes
+        model_dtype = torch.bfloat16 if torch.cuda.is_available() else torch.float32
         
         base_model = AutoModelForCausalLM.from_pretrained(
             checkpoint_dir,
-            torch_dtype=torch.bfloat16,
+            torch_dtype=model_dtype,
             low_cpu_mem_usage=True
         )
         
@@ -54,11 +59,13 @@ def load_resources():
             t = int(num_layers * 0.7)
             print(f"Warning: Unexpected layer count {num_layers}. Slicing: b={b}, t={t}")
             
-        model = ImpRAGModel(base_model, b=b, t=t, k_passages=2, max_passage_len=64)
+        model = ImpRAGModel(base_model, b=b, t=t, k_passages=5, max_passage_len=128)
         model.to(device)
         model.eval()
         return True, "All models loaded successfully!"
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         return False, f"Failed to load resources: {str(e)}"
 
 # Attempt to load immediately when launching
@@ -71,50 +78,59 @@ def qa_interface(query):
     if not query.strip():
         return "Please enter a valid question.", ""
         
-    formatted_query = f"Q: {query} A: "
-    q_enc = tokenizer([formatted_query], return_tensors="pt")
-    q_ids = q_enc.input_ids.to(device)
-    q_mask = q_enc.attention_mask.to(device)
-    
-    with torch.no_grad():
-        # 1. Embed query
-        E_q = model.get_retriever_embeddings(q_ids, attention_mask=q_mask, is_query=True)
-        E_q_norm = F.normalize(E_q, p=2, dim=-1)
+    try:
+        formatted_query = f"Q: {query} A: "
+        q_enc = tokenizer([formatted_query], return_tensors="pt")
+        q_ids = q_enc.input_ids.to(device)
+        q_mask = q_enc.attention_mask.to(device)
         
-        # 2. Search FAISS index
-        distances, indices = faiss_index.search(E_q_norm.float().cpu().numpy(), k=5)
-        ret_passages = [passages[idx] for idx in indices[0] if idx != -1]
-        
-        # Format context display
-        context_markdown = "### 📚 Retrieved Wikipedia Contexts:\n\n"
-        for rank, text in enumerate(ret_passages[:3], 1):
-            context_markdown += f"**Passage {rank}**\n> {text}\n\n"
+        with torch.no_grad():
+            # 1. Embed query
+            E_q = model.get_retriever_embeddings(q_ids, attention_mask=q_mask, is_query=True)
+            E_q_norm = F.normalize(E_q, p=2, dim=-1)
             
-        # 3. Retrieve top-2 passages and encode to KV states for reader
-        retrieved_passage_ids = tokenizer(
-            ret_passages[:2], 
-            padding=True, 
-            truncation=True, 
-            max_length=64, 
-            return_tensors="pt"
-        ).input_ids.to(device)
-        
-        custom_cache = model.encode_passages(retrieved_passage_ids)
-        
-        # 4. Generate Answer
-        gen_tokens = model.generate(q_ids, custom_cache, max_new_tokens=30)
-        
-        # Decode output directly (gen_tokens only contains new tokens)
-        gen_text = tokenizer.decode(gen_tokens[0], skip_special_tokens=True).strip()
-        
-        return gen_text, context_markdown
+            # 2. Search FAISS index
+            distances, indices = faiss_index.search(E_q_norm.float().cpu().numpy(), k=5)
+            ret_passages = [passages[idx] for idx in indices[0] if idx != -1]
+            
+            # Ensure we always have at least k_passages (5) to prevent batch size shape crashes
+            while len(ret_passages) < model.k_passages:
+                ret_passages.append("No context available.")
+                
+            # Format context display
+            context_markdown = "### 📚 Top-5 Retrieved Wikipedia Contexts:\n\n"
+            for rank, text in enumerate(ret_passages[:5], 1):
+                context_markdown += f"**Passage {rank}**\n> {text}\n\n"
+                
+            # 3. Retrieve top-k passages and encode to KV states for reader
+            retrieved_passage_ids = tokenizer(
+                ret_passages[:model.k_passages], 
+                padding=True, 
+                truncation=True, 
+                max_length=128, 
+                return_tensors="pt"
+            ).input_ids.to(device)
+            
+            custom_cache = model.encode_passages(retrieved_passage_ids)
+            
+            # 4. Generate Answer
+            gen_tokens = model.generate(q_ids, custom_cache, max_new_tokens=30)
+            
+            # Decode output directly
+            gen_text = tokenizer.decode(gen_tokens[0], skip_special_tokens=True).strip()
+            
+            return gen_text, context_markdown
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return f"Error processing query: {str(e)}", f"Error during retrieval: {str(e)}"
 
 # Build modern Gradio interface
 with gr.Blocks() as demo:
     gr.Markdown(
         """
         # 🧠 Adaptive ImpRAG (Implicit Retrieval-Augmented Generation)
-        ### Capstone Project Baseline Demo — Qwen2.5-1.5B
+        ### Capstone Project Baseline Demo — Meta-Llama-3-8B-Instruct
         Ask a question to search the Simple Wikipedia corpus and generate an answer using implicit middle-layer caching.
         """
     )

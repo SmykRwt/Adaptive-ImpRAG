@@ -49,12 +49,14 @@ def main():
             weights_exist = True
             break
             
-    model_source = checkpoint_dir if weights_exist else "Qwen/Qwen2.5-1.5B-Instruct"
+    model_source = checkpoint_dir if weights_exist else "meta-llama/Meta-Llama-3-8B-Instruct"
     print(f"Loading base model from: {model_source}...")
     
+    model_dtype = torch.bfloat16 if torch.cuda.is_available() else torch.float32
+
     base_model = AutoModelForCausalLM.from_pretrained(
         model_source,
-        torch_dtype=torch.bfloat16,
+        torch_dtype=model_dtype,
         low_cpu_mem_usage=True
     )
     

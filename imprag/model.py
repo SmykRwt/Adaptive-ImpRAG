@@ -12,7 +12,7 @@ class ImpRAGModel(nn.Module):
     3. Middle layers as reader: prepends retrieved passage KV states inside layers b..t using DynamicCache.
     4. Shifted Position IDs: shifts query/response token position IDs to avoid interference with passage RoPE.
     """
-    def __init__(self, base_model, b, t, k_passages=5, max_passage_len=32, pooling_type="mean"):
+    def __init__(self, base_model, b, t, k_passages=5, max_passage_len=128, pooling_type="mean"):
         super().__init__()
         self.base_model = base_model
         self.b = b

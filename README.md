@@ -1,6 +1,6 @@
 # 🧠 Adaptive ImpRAG (Implicit Retrieval-Augmented Generation)
 
-This repository contains a **paper-faithful baseline implementation** of the original **ImpRAG (Implicit Retrieval-Augmented Generation)** paper. It is fully scaled to run on high-performance single-GPU or multi-GPU cluster configurations, using a sliced **Llama-3-3B** (`meta-llama/Llama-3.2-3B-Instruct`) architecture by default, with dynamic support for larger/smaller models (e.g. Llama-3-8B).
+This repository contains a **paper-faithful baseline implementation** of the original **ImpRAG (Implicit Retrieval-Augmented Generation)** paper. It is fully scaled to run on high-performance single-GPU (e.g., NVIDIA A100 40GB/80GB) or multi-GPU cluster configurations, using a sliced **Llama-3-8B** (`meta-llama/Meta-Llama-3-8B-Instruct`) architecture by default, with dynamic support for $k=5$ injected passages and 128-token passage budgets.
 
 ---
 

@@ -48,9 +48,12 @@ def main():
     tokenizer = AutoTokenizer.from_pretrained(checkpoint_dir)
     tokenizer.pad_token = tokenizer.eos_token
     
+    # Use bfloat16 for GPU, float32 for CPU
+    model_dtype = torch.bfloat16 if torch.cuda.is_available() else torch.float32
+
     base_model = AutoModelForCausalLM.from_pretrained(
         checkpoint_dir,
-        torch_dtype=torch.bfloat16,
+        torch_dtype=model_dtype,
         low_cpu_mem_usage=True
     )
     
@@ -67,7 +70,7 @@ def main():
         t = int(num_layers * 0.7)
         print(f"Warning: Unexpected layer count {num_layers}. Slicing: b={b}, t={t}")
         
-    model = ImpRAGModel(base_model, b=b, t=t, k_passages=2, max_passage_len=64)
+    model = ImpRAGModel(base_model, b=b, t=t, k_passages=5, max_passage_len=128)
     model.to(device)
     model.eval()
     
@@ -100,17 +103,20 @@ def main():
                 distances, indices = faiss_index.search(E_q_norm.float().cpu().numpy(), k=5)
                 ret_passages = [passages[idx] for idx in indices[0] if idx != -1]
                 
+                while len(ret_passages) < model.k_passages:
+                    ret_passages.append("No context available.")
+                    
                 print("\n" + "-" * 30 + " RETRIEVED CONTEXTS " + "-" * 30)
-                for rank, text in enumerate(ret_passages[:2], 1):
+                for rank, text in enumerate(ret_passages[:5], 1):
                     print(f"[{rank}] {text}")
                 print("-" * 80)
                 
-                # Retrieve top-2 passages and encode to KV states for reader
+                # Retrieve top-5 passages and encode to KV states for reader
                 retrieved_passage_ids = tokenizer(
-                    ret_passages[:2], 
+                    ret_passages[:model.k_passages], 
                     padding=True, 
                     truncation=True, 
-                    max_length=64, 
+                    max_length=128, 
                     return_tensors="pt"
                 ).input_ids.to(device)
                 

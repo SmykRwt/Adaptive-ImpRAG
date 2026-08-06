@@ -55,11 +55,11 @@ def index_corpus(model, tokenizer, passages, batch_size=128, device="cpu"):
 
 def main():
     parser = argparse.ArgumentParser(description="ImpRAG Large-Scale GPU Trainer")
-    parser.add_argument("--model", type=str, default="meta-llama/Llama-3.2-3B-Instruct", help="Base model checkpoint to use")
-    parser.add_argument("--batch_size", type=int, default=4, help="Batch size per GPU forward pass")
+    parser.add_argument("--model", type=str, default="meta-llama/Meta-Llama-3-8B-Instruct", help="Base model checkpoint to use")
+    parser.add_argument("--batch_size", type=int, default=16, help="Batch size per GPU forward pass")
     parser.add_argument("--epochs", type=int, default=6, help="Total training epochs")
     parser.add_argument("--warmup_epochs", type=int, default=2, help="Number of NCE warmup epochs")
-    parser.add_argument("--accumulation_steps", type=int, default=16, help="Gradient accumulation steps")
+    parser.add_argument("--accumulation_steps", type=int, default=4, help="Gradient accumulation steps")
     parser.add_argument("--lr", type=float, default=3e-5, help="Learning rate")
     parser.add_argument("--use_amp", action="store_true", default=True, help="Use Automatic Mixed Precision (AMP)")
     parser.add_argument("--pooling_type", type=str, default="last_token", choices=["last_token", "mean"], help="Pooling type for retrievals")
@@ -139,7 +139,7 @@ def main():
     if local_rank == 0:
         print(f"Model Slicing Boundaries: bottom layer group LB (0..{b}), middle group LM ({b}..{t}), top group LT ({t}..{num_layers-1})")
     
-    model = ImpRAGModel(base_model, b=b, t=t, k_passages=2, max_passage_len=64, pooling_type=args.pooling_type)
+    model = ImpRAGModel(base_model, b=b, t=t, k_passages=5, max_passage_len=128, pooling_type=args.pooling_type)
     model.to(device)
     
     # 4. Create Datasets and DDP DataLoaders
@@ -156,7 +156,7 @@ def main():
         sampler=train_sampler,
         num_workers=args.num_workers if device != "cpu" else 0,
         pin_memory=True if device != "cpu" else False,
-        collate_fn=lambda b: collate_fn(b, tokenizer, max_query_len=64, max_passage_len=64, num_candidates=5)
+        collate_fn=lambda b: collate_fn(b, tokenizer, max_query_len=64, max_passage_len=128, num_candidates=5)
     )
     eval_loader = DataLoader(
         eval_dataset,
@@ -165,7 +165,7 @@ def main():
         sampler=eval_sampler,
         num_workers=args.num_workers if device != "cpu" else 0,
         pin_memory=True if device != "cpu" else False,
-        collate_fn=lambda b: collate_fn(b, tokenizer, max_query_len=64, max_passage_len=64, num_candidates=5)
+        collate_fn=lambda b: collate_fn(b, tokenizer, max_query_len=64, max_passage_len=128, num_candidates=5)
     )
     
     # 5. Initialize Optimizer, Scheduler and Trainer
@@ -308,7 +308,7 @@ def main():
                 if has_answer:
                     retrieval_recalls += 1
                     
-                retrieved_passage_ids = tokenizer(ret_passages[:2], padding=True, truncation=True, max_length=64, return_tensors="pt").input_ids.to(device)
+                retrieved_passage_ids = tokenizer(ret_passages[:5], padding=True, truncation=True, max_length=128, return_tensors="pt").input_ids.to(device)
                 custom_cache = model_obj.encode_passages(retrieved_passage_ids)
                 
                 gen_tokens = model_obj.generate(q_ids, custom_cache, max_new_tokens=15)
