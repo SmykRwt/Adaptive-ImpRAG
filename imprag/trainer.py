@@ -28,7 +28,8 @@ class ImpRAGTrainer:
         self.distill_loss_fn = SelfDistillationLoss(tau_t=tau_t, tau_r=tau_r)
         
         if self.use_amp:
-            self.scaler = torch.cuda.amp.GradScaler()
+            # GradScaler is not required or supported for bfloat16 in PyTorch (bfloat16 has 8-bit exponent)
+            self.scaler = torch.cuda.amp.GradScaler(enabled=False)
         else:
             self.scaler = None
 
@@ -145,33 +146,17 @@ class ImpRAGTrainer:
                     
                     ret_loss = self.distill_loss_fn(scores_local, log_probs_lm)
                     
-                # Compute Reader Generation Loss using top retrieved passages
-                # If distributed, use the local batch candidates for memory efficiency
-                k_passages = min(model_obj.k_passages, batch_size)
+                # 3. Main Generator Forward Pass (Query token loss)
+                topk_passage_ids = candidate_passage_ids[:batch_size * model_obj.k_passages]
+                topk_cache = model_obj.encode_passages(topk_passage_ids)
                 
-                # During warmup or distillation, retrieval utilizes local scores
-                scores_for_topk = scores_local if not is_warmup and is_distributed else scores
-                _, topk_indices = torch.topk(scores_for_topk[:, :batch_size], k=k_passages, dim=-1)
+                outputs = model_obj(
+                    query_ids=query_ids,
+                    custom_past_key_values=topk_cache,
+                    labels=labels,
+                    attention_mask=query_attention_mask
+                )
                 
-                selected_passages_list = []
-                for i in range(batch_size):
-                    selected_passages = candidate_passage_ids[topk_indices[i]]
-                    selected_passages_list.append(selected_passages)
-                    
-                selected_passage_ids = torch.cat(selected_passages_list, dim=0)
-                
-                orig_k = model_obj.k_passages
-                model_obj.k_passages = k_passages
-                try:
-                    topk_cache = model_obj.encode_passages(selected_passage_ids)
-                    outputs = self.model(
-                        query_ids=full_ids,
-                        custom_past_key_values=topk_cache,
-                        labels=labels
-                    )
-                finally:
-                    model_obj.k_passages = orig_k
-                    
                 gen_loss = outputs.loss
                 loss = gen_loss + self.lambda_ret * ret_loss
                 
@@ -181,13 +166,13 @@ class ImpRAGTrainer:
             if torch.isnan(loss) or torch.isinf(loss):
                 continue
                 
-            if self.use_amp:
+            if self.use_amp and self.scaler is not None and self.scaler.is_enabled():
                 self.scaler.scale(loss).backward()
             else:
                 loss.backward()
                 
             if (batch_idx + 1) % self.accumulation_steps == 0 or (batch_idx + 1) == len(dataloader):
-                if self.use_amp:
+                if self.use_amp and self.scaler is not None and self.scaler.is_enabled():
                     self.scaler.unscale_(self.optimizer)
                     torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
                     self.scaler.step(self.optimizer)
