@@ -5,7 +5,7 @@ import torch.distributed as dist
 from transformers.cache_utils import DynamicCache
 from imprag.loss import SelfDistillationLoss
 
-from imprag.model import extract_kv_for_layer
+from imprag.model import extract_kv_for_layer, safe_update_dynamic_cache
 
 class ImpRAGTrainer:
     """
@@ -112,7 +112,7 @@ class ImpRAGTrainer:
                                 k, v = extract_kv_for_layer(passage_cache, l)
                                 rep_k = k.repeat_interleave(batch_size, dim=0)
                                 rep_v = v.repeat_interleave(batch_size, dim=0)
-                                replicated_cache.update(rep_k, rep_v, l)
+                                safe_update_dynamic_cache(replicated_cache, rep_k, rep_v, l)
                                 
                         k_max_len = model_obj.k_passages * model_obj.max_passage_len
                         query_len = replicated_full_ids.shape[1]

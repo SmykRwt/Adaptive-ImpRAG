@@ -29,6 +29,24 @@ def extract_kv_for_layer(passage_cache, l):
         return layer_obj[0], layer_obj[1]
     return getattr(layer_obj, "keys", layer_obj[0]), getattr(layer_obj, "values", layer_obj[1])
 
+def safe_update_dynamic_cache(cache, k, v, layer_idx):
+    """
+    Safely updates DynamicCache for arbitrary layer_idx by pre-filling 0-length
+    tensors for preceding layers if cache.key_cache is shorter than layer_idx.
+    """
+    num_heads = k.shape[1]
+    head_dim = k.shape[3]
+    batch_size = k.shape[0]
+    
+    # Pre-fill preceding layers with 0-seq-len dummy tensors to prevent IndexError in transformers DynamicCache
+    while len(cache.key_cache) < layer_idx:
+        dummy_k = torch.empty((batch_size, num_heads, 0, head_dim), device=k.device, dtype=k.dtype)
+        dummy_v = torch.empty((batch_size, num_heads, 0, head_dim), device=v.device, dtype=v.dtype)
+        cache.key_cache.append(dummy_k)
+        cache.value_cache.append(dummy_v)
+        
+    cache.update(k, v, layer_idx)
+
 class ImpRAGModel(nn.Module):
     """
     Wrapper around a Hugging Face CausalLM model to support the ImpRAG architecture.
@@ -238,8 +256,10 @@ class ImpRAGModel(nn.Module):
                 k_concat = k_state.reshape(batch_size, num_heads, self.k_passages * passage_len, head_dim)
                 v_concat = v_state.reshape(batch_size, num_heads, self.k_passages * passage_len, head_dim)
                 
-                # Write to the custom cache
-                custom_cache.update(k_concat, v_concat, l)
+                # Write to the custom cache safely
+                safe_update_dynamic_cache(custom_cache, k_concat, v_concat, l)
+                
+        return custom_cache
                 
         return custom_cache
 
