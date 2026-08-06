@@ -3,6 +3,32 @@ import torch.nn as nn
 import torch.nn.functional as F
 from transformers.cache_utils import DynamicCache
 
+def extract_kv_for_layer(passage_cache, l):
+    """
+    Extracts key and value tensors for layer l from passage_cache,
+    handling DynamicCache (various versions) and legacy tuple structures.
+    """
+    if isinstance(passage_cache, tuple):
+        layer_obj = passage_cache[l]
+        if isinstance(layer_obj, (tuple, list)):
+            return layer_obj[0], layer_obj[1]
+        elif hasattr(layer_obj, "keys") and hasattr(layer_obj, "values"):
+            return layer_obj.keys, layer_obj.values
+    elif hasattr(passage_cache, "key_cache") and hasattr(passage_cache, "value_cache") and len(passage_cache.key_cache) > l:
+        return passage_cache.key_cache[l], passage_cache.value_cache[l]
+    elif hasattr(passage_cache, "layers") and len(passage_cache.layers) > l:
+        layer_obj = passage_cache.layers[l]
+        if hasattr(layer_obj, "keys") and hasattr(layer_obj, "values"):
+            return layer_obj.keys, layer_obj.values
+        elif isinstance(layer_obj, (tuple, list)):
+            return layer_obj[0], layer_obj[1]
+    
+    # Fallback indexing
+    layer_obj = passage_cache[l]
+    if isinstance(layer_obj, (tuple, list)):
+        return layer_obj[0], layer_obj[1]
+    return getattr(layer_obj, "keys", layer_obj[0]), getattr(layer_obj, "values", layer_obj[1])
+
 class ImpRAGModel(nn.Module):
     """
     Wrapper around a Hugging Face CausalLM model to support the ImpRAG architecture.
@@ -195,11 +221,8 @@ class ImpRAGModel(nn.Module):
         
         for l in range(num_layers):
             if self.b <= l <= self.t:
-                # Extract keys and values from the passage cache
-                # In DynamicCache, layers contains DynamicLayer objects
-                layer_cache = passage_cache.layers[l]
-                k_state = layer_cache.keys      # [batch_size * k, num_heads, seq_len, head_dim]
-                v_state = layer_cache.values    # [batch_size * k, num_heads, seq_len, head_dim]
+                # Extract keys and values from the passage cache using extract_kv_for_layer
+                k_state, v_state = extract_kv_for_layer(passage_cache, l)
                 
                 num_heads, _, head_dim = k_state.shape[1], k_state.shape[2], k_state.shape[3]
                 

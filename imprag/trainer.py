@@ -5,6 +5,8 @@ import torch.distributed as dist
 from transformers.cache_utils import DynamicCache
 from imprag.loss import SelfDistillationLoss
 
+from imprag.model import extract_kv_for_layer
+
 class ImpRAGTrainer:
     """
     Two-stage trainer for ImpRAG using in-batch negatives with DDP multi-GPU support:
@@ -107,8 +109,7 @@ class ImpRAGTrainer:
                         
                         for l in range(num_layers):
                             if model_obj.b <= l <= model_obj.t:
-                                layer_cache = passage_cache.layers[l]
-                                k, v = layer_cache[0], layer_cache[1]
+                                k, v = extract_kv_for_layer(passage_cache, l)
                                 rep_k = k.repeat_interleave(batch_size, dim=0)
                                 rep_v = v.repeat_interleave(batch_size, dim=0)
                                 replicated_cache.update(rep_k, rep_v, l)
