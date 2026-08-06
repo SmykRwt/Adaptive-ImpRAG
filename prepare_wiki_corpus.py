@@ -21,9 +21,12 @@ def main():
     passages = []
     
     if args.dataset == "wikipedia_simple":
-        print("Downloading simple Wikipedia dataset (20220301.simple) from Hugging Face...")
-        # Simple Wikipedia has pre-tokenized paragraphs or full texts
-        dataset = load_dataset("wikipedia", "20220301.simple", split="train")
+        print("Downloading simple Wikipedia dataset (20231101.simple) from Hugging Face...")
+        # Use modern wikimedia/wikipedia parquet format (datasets v3.0+ compatible)
+        try:
+            dataset = load_dataset("wikimedia/wikipedia", "20231101.simple", split="train")
+        except Exception:
+            dataset = load_dataset("wikipedia", "20220301.simple", split="train", trust_remote_code=True)
         
         print("Processing and chunking articles into 128-word passages...")
         for item in tqdm(dataset, desc="Processing articles"):
