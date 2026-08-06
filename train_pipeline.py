@@ -56,10 +56,10 @@ def index_corpus(model, tokenizer, passages, batch_size=128, device="cpu"):
 def main():
     parser = argparse.ArgumentParser(description="ImpRAG Large-Scale GPU Trainer")
     parser.add_argument("--model", type=str, default="meta-llama/Meta-Llama-3-8B-Instruct", help="Base model checkpoint to use")
-    parser.add_argument("--batch_size", type=int, default=16, help="Batch size per GPU forward pass")
+    parser.add_argument("--batch_size", type=int, default=8, help="Batch size per GPU forward pass")
     parser.add_argument("--epochs", type=int, default=6, help="Total training epochs")
     parser.add_argument("--warmup_epochs", type=int, default=2, help="Number of NCE warmup epochs")
-    parser.add_argument("--accumulation_steps", type=int, default=4, help="Gradient accumulation steps")
+    parser.add_argument("--accumulation_steps", type=int, default=8, help="Gradient accumulation steps")
     parser.add_argument("--lr", type=float, default=3e-5, help="Learning rate")
     parser.add_argument("--use_amp", action="store_true", default=True, help="Use Automatic Mixed Precision (AMP)")
     parser.add_argument("--pooling_type", type=str, default="last_token", choices=["last_token", "mean"], help="Pooling type for retrievals")

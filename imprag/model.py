@@ -228,9 +228,27 @@ class ImpRAGModel(nn.Module):
         batch_k, passage_len = passage_ids.shape
         batch_size = batch_k // self.k_passages
         
-        # Run a forward pass of the base model on passages to compute their KV states
-        outputs = self.base_model(input_ids=passage_ids, attention_mask=attention_mask, use_cache=True)
-        passage_cache = outputs.past_key_values
+        # Sub-chunk passage forward pass if total passages > 16 to avoid NVML VRAM peaks on MIG partitions
+        sub_batch_size = 16
+        if batch_k > sub_batch_size:
+            all_k_states = {l: [] for l in range(self.b, self.t + 1)}
+            all_v_states = {l: [] for l in range(self.b, self.t + 1)}
+            
+            for i in range(0, batch_k, sub_batch_size):
+                sub_ids = passage_ids[i : i + sub_batch_size]
+                sub_mask = attention_mask[i : i + sub_batch_size] if attention_mask is not None else None
+                with torch.no_grad():
+                    sub_out = self.base_model(input_ids=sub_ids, attention_mask=sub_mask, use_cache=True)
+                for l in range(self.b, self.t + 1):
+                    k_s, v_s = extract_kv_for_layer(sub_out.past_key_values, l)
+                    all_k_states[l].append(k_s)
+                    all_v_states[l].append(v_s)
+                    
+            passage_cache_map = {l: (torch.cat(all_k_states[l], dim=0), torch.cat(all_v_states[l], dim=0)) for l in range(self.b, self.t + 1)}
+        else:
+            with torch.no_grad():
+                outputs = self.base_model(input_ids=passage_ids, attention_mask=attention_mask, use_cache=True)
+            passage_cache_map = {l: extract_kv_for_layer(outputs.past_key_values, l) for l in range(self.b, self.t + 1)}
         
         custom_cache = DynamicCache()
         
@@ -239,8 +257,7 @@ class ImpRAGModel(nn.Module):
         
         for l in range(num_layers):
             if self.b <= l <= self.t:
-                # Extract keys and values from the passage cache using extract_kv_for_layer
-                k_state, v_state = extract_kv_for_layer(passage_cache, l)
+                k_state, v_state = passage_cache_map[l]
                 
                 num_heads, _, head_dim = k_state.shape[1], k_state.shape[2], k_state.shape[3]
                 
