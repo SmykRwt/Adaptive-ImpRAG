@@ -97,12 +97,17 @@ class ImpRAGTrainer:
                     replicated_full_ids = full_ids.repeat(batch_size, 1)
                     replicated_labels = labels.repeat(batch_size, 1)
                     
-                    with torch.no_grad():
-                        passage_outputs = model_obj.base_model(
-                            input_ids=candidate_passage_ids,
-                            use_cache=True
-                        )
-                        passage_cache = passage_outputs.past_key_values
+                    was_tr = model_obj.base_model.training
+                    model_obj.base_model.eval()
+                    try:
+                        with torch.no_grad():
+                            passage_outputs = model_obj.base_model(
+                                input_ids=candidate_passage_ids,
+                                use_cache=True
+                            )
+                            passage_cache = passage_outputs.past_key_values
+                    finally:
+                        model_obj.base_model.train(was_tr)
                         
                         replicated_cache = DynamicCache()
                         num_layers = model_obj.base_model.config.n_layer if model_obj.model_type == "gpt2" else model_obj.base_model.config.num_hidden_layers

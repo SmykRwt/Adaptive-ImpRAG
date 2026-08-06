@@ -228,27 +228,32 @@ class ImpRAGModel(nn.Module):
         batch_k, passage_len = passage_ids.shape
         batch_size = batch_k // self.k_passages
         
-        # Sub-chunk passage forward pass if total passages > 16 to avoid NVML VRAM peaks on MIG partitions
-        sub_batch_size = 16
-        if batch_k > sub_batch_size:
-            all_k_states = {l: [] for l in range(self.b, self.t + 1)}
-            all_v_states = {l: [] for l in range(self.b, self.t + 1)}
-            
-            for i in range(0, batch_k, sub_batch_size):
-                sub_ids = passage_ids[i : i + sub_batch_size]
-                sub_mask = attention_mask[i : i + sub_batch_size] if attention_mask is not None else None
+        was_training = self.base_model.training
+        self.base_model.eval()
+        try:
+            # Sub-chunk passage forward pass if total passages > 16 to avoid NVML VRAM peaks on MIG partitions
+            sub_batch_size = 16
+            if batch_k > sub_batch_size:
+                all_k_states = {l: [] for l in range(self.b, self.t + 1)}
+                all_v_states = {l: [] for l in range(self.b, self.t + 1)}
+                
+                for i in range(0, batch_k, sub_batch_size):
+                    sub_ids = passage_ids[i : i + sub_batch_size]
+                    sub_mask = attention_mask[i : i + sub_batch_size] if attention_mask is not None else None
+                    with torch.no_grad():
+                        sub_out = self.base_model(input_ids=sub_ids, attention_mask=sub_mask, use_cache=True)
+                    for l in range(self.b, self.t + 1):
+                        k_s, v_s = extract_kv_for_layer(sub_out.past_key_values, l)
+                        all_k_states[l].append(k_s)
+                        all_v_states[l].append(v_s)
+                        
+                passage_cache_map = {l: (torch.cat(all_k_states[l], dim=0), torch.cat(all_v_states[l], dim=0)) for l in range(self.b, self.t + 1)}
+            else:
                 with torch.no_grad():
-                    sub_out = self.base_model(input_ids=sub_ids, attention_mask=sub_mask, use_cache=True)
-                for l in range(self.b, self.t + 1):
-                    k_s, v_s = extract_kv_for_layer(sub_out.past_key_values, l)
-                    all_k_states[l].append(k_s)
-                    all_v_states[l].append(v_s)
-                    
-            passage_cache_map = {l: (torch.cat(all_k_states[l], dim=0), torch.cat(all_v_states[l], dim=0)) for l in range(self.b, self.t + 1)}
-        else:
-            with torch.no_grad():
-                outputs = self.base_model(input_ids=passage_ids, attention_mask=attention_mask, use_cache=True)
-            passage_cache_map = {l: extract_kv_for_layer(outputs.past_key_values, l) for l in range(self.b, self.t + 1)}
+                    outputs = self.base_model(input_ids=passage_ids, attention_mask=attention_mask, use_cache=True)
+                passage_cache_map = {l: extract_kv_for_layer(outputs.past_key_values, l) for l in range(self.b, self.t + 1)}
+        finally:
+            self.base_model.train(was_training)
         
         custom_cache = DynamicCache()
         
