@@ -63,6 +63,7 @@ class ImpRAGTrainer:
                 continue
                 
             query_attention_mask = batch["query_attention_mask"].to(self.device)
+            full_attention_mask = batch["full_attention_mask"].to(self.device)
             candidate_passage_attention_mask = batch["candidate_passage_attention_mask"].to(self.device)
             
             autocast_context = torch.cuda.amp.autocast(dtype=torch.bfloat16) if self.use_amp else torch.cuda.amp.autocast(enabled=False)
