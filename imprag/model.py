@@ -217,7 +217,7 @@ class ImpRAGModel(nn.Module):
         
         return E_q if is_query else E_p
 
-    def encode_passages(self, passage_ids, attention_mask=None):
+    def encode_passages(self, passage_ids, attention_mask=None, k_passages=None):
         """
         Runs the passages through the bottom and middle layers to get their KV states.
         passage_ids: [batch_size * k, passage_len]
@@ -226,7 +226,8 @@ class ImpRAGModel(nn.Module):
             for reader layers b..t, and empty for other layers.
         """
         batch_k, passage_len = passage_ids.shape
-        batch_size = batch_k // self.k_passages
+        k = k_passages if k_passages is not None else (self.k_passages if batch_k % self.k_passages == 0 else 1)
+        batch_size = batch_k // k
         
         was_training = self.base_model.training
         self.base_model.eval()
@@ -267,21 +268,19 @@ class ImpRAGModel(nn.Module):
                 num_heads, _, head_dim = k_state.shape[1], k_state.shape[2], k_state.shape[3]
                 
                 # Reshape to separate batch_size and k: [batch_size, k, num_heads, passage_len, head_dim]
-                k_state = k_state.view(batch_size, self.k_passages, num_heads, passage_len, head_dim)
-                v_state = v_state.view(batch_size, self.k_passages, num_heads, passage_len, head_dim)
+                k_state = k_state.view(batch_size, k, num_heads, passage_len, head_dim)
+                v_state = v_state.view(batch_size, k, num_heads, passage_len, head_dim)
                 
                 # Permute to make num_heads second dimension: [batch_size, num_heads, k, passage_len, head_dim]
                 k_state = k_state.permute(0, 2, 1, 3, 4)
                 v_state = v_state.permute(0, 2, 1, 3, 4)
                 
                 # Concatenate all k passages along sequence dimension: [batch_size, num_heads, k * passage_len, head_dim]
-                k_concat = k_state.reshape(batch_size, num_heads, self.k_passages * passage_len, head_dim)
-                v_concat = v_state.reshape(batch_size, num_heads, self.k_passages * passage_len, head_dim)
+                k_concat = k_state.reshape(batch_size, num_heads, k * passage_len, head_dim)
+                v_concat = v_state.reshape(batch_size, num_heads, k * passage_len, head_dim)
                 
                 # Write to the custom cache safely
                 safe_update_dynamic_cache(custom_cache, k_concat, v_concat, l)
-                
-        return custom_cache
                 
         return custom_cache
 
@@ -292,7 +291,10 @@ class ImpRAGModel(nn.Module):
         custom_past_key_values: pre-encoded passage cache
         """
         batch_size, query_len = query_ids.shape
-        k_max_len = self.k_passages * self.max_passage_len
+        if hasattr(custom_past_key_values, "key_cache") and len(custom_past_key_values.key_cache) > self.b and custom_past_key_values.key_cache[self.b] is not None and custom_past_key_values.key_cache[self.b].ndim >= 3:
+            k_max_len = custom_past_key_values.key_cache[self.b].shape[2]
+        else:
+            k_max_len = self.k_passages * self.max_passage_len
         
         # Construct shifted position IDs
         position_ids = torch.arange(k_max_len, k_max_len + query_len, device=query_ids.device)

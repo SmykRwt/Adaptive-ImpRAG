@@ -147,8 +147,8 @@ class ImpRAGTrainer:
                     ret_loss = self.distill_loss_fn(scores_local, log_probs_lm)
                     
                 # 3. Main Generator Forward Pass (Query token loss)
-                topk_passage_ids = candidate_passage_ids[:batch_size * model_obj.k_passages]
-                topk_cache = model_obj.encode_passages(topk_passage_ids)
+                topk_passage_ids = candidate_passage_ids[:batch_size]
+                topk_cache = model_obj.encode_passages(topk_passage_ids, k_passages=1)
                 
                 outputs = model_obj(
                     query_ids=query_ids,
