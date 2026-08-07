@@ -156,10 +156,10 @@ class ImpRAGTrainer:
                 topk_cache = model_obj.encode_passages(topk_passage_ids, k_passages=1)
                 
                 outputs = model_obj(
-                    query_ids=query_ids,
+                    query_ids=full_ids,
                     custom_past_key_values=topk_cache,
                     labels=labels,
-                    attention_mask=query_attention_mask
+                    attention_mask=full_attention_mask
                 )
                 
                 gen_loss = outputs.loss
