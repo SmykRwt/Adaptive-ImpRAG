@@ -131,24 +131,43 @@ class ImpRAGTrainer:
                         position_ids = torch.arange(k_max_len, k_max_len + query_len, device=self.device)
                         position_ids = position_ids.unsqueeze(0).repeat(batch_size * batch_size, 1)
                         
-                        outputs_rep = model_obj.base_model(
-                            input_ids=replicated_full_ids,
-                            past_key_values=replicated_cache,
-                            position_ids=position_ids,
-                            attention_mask=None
-                        )
-                        
-                        logits_rep = outputs_rep.logits
-                        shift_logits = logits_rep[..., :-1, :].contiguous()
-                        shift_labels = replicated_labels[..., 1:].contiguous()
-                        
+                        # Sub-chunk the self-distillation forward pass (max 16 sequences per pass) to prevent NVML VRAM allocation peaks
+                        loss_per_seq_list = []
+                        sub_chunk_size = 16
+                        num_replicated = batch_size * batch_size
                         loss_fct = nn.CrossEntropyLoss(reduction="none")
-                        loss_per_token = loss_fct(shift_logits.view(-1, shift_logits.size(-1)), shift_labels.view(-1))
-                        loss_per_token = loss_per_token.view(batch_size * batch_size, -1)
                         
-                        mask = (shift_labels != -100).float()
-                        loss_per_seq = (loss_per_token * mask).sum(dim=-1)
-                        
+                        for start_i in range(0, num_replicated, sub_chunk_size):
+                            end_i = min(start_i + sub_chunk_size, num_replicated)
+                            sub_full_ids = replicated_full_ids[start_i:end_i]
+                            sub_labels = replicated_labels[start_i:end_i]
+                            sub_pos_ids = position_ids[start_i:end_i]
+                            
+                            sub_cache = DynamicCache()
+                            for l in range(num_layers):
+                                if model_obj.b <= l <= model_obj.t:
+                                    k_l, v_l = extract_kv_for_layer(replicated_cache, l)
+                                    safe_update_dynamic_cache(sub_cache, k_l[start_i:end_i], v_l[start_i:end_i], l)
+                                    
+                            outputs_rep = model_obj.base_model(
+                                input_ids=sub_full_ids,
+                                past_key_values=sub_cache,
+                                position_ids=sub_pos_ids,
+                                attention_mask=None
+                            )
+                            
+                            logits_rep = outputs_rep.logits
+                            shift_logits = logits_rep[..., :-1, :].contiguous()
+                            shift_labels = sub_labels[..., 1:].contiguous()
+                            
+                            sub_loss_per_tok = loss_fct(shift_logits.view(-1, shift_logits.size(-1)), shift_labels.view(-1))
+                            sub_loss_per_tok = sub_loss_per_tok.view(end_i - start_i, -1)
+                            
+                            sub_mask = (shift_labels != -100).float()
+                            sub_loss_per_seq = (sub_loss_per_tok * sub_mask).sum(dim=-1)
+                            loss_per_seq_list.append(sub_loss_per_seq)
+                            
+                        loss_per_seq = torch.cat(loss_per_seq_list, dim=0)
                         log_probs_lm = -loss_per_seq.view(batch_size, batch_size).transpose(0, 1)
                     
                     ret_loss = self.distill_loss_fn(scores_local, log_probs_lm)
