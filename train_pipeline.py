@@ -242,15 +242,33 @@ def main():
         print(f"Pre-training Candidate EM: {pre_em*100:.2f}%")
         print(f"Pre-training Candidate Retrieval Recall: {pre_recall*100:.2f}%")
     
-    # 7. Run Two-Stage Training
+    # 7. Run Two-Stage Training (with automatic checkpoint saving per epoch)
     if local_rank == 0:
         print("\nStarting Two-Stage Training Loop...")
+        
     for epoch in range(trainer.total_epochs):
+        epoch_ckpt = f"checkpoint_epoch_{epoch + 1}.pt"
+        if os.path.exists(epoch_ckpt):
+            if local_rank == 0:
+                print(f"Loading pre-saved checkpoint for Epoch {epoch + 1} ({epoch_ckpt}). Skipping to next epoch...")
+            checkpoint_data = torch.load(epoch_ckpt, map_location=device)
+            model_obj = model.module if hasattr(model, "module") else model
+            model_obj.load_state_dict(checkpoint_data["model_state"], strict=False)
+            continue
+
         if is_distributed:
             train_sampler.set_epoch(epoch)
         loss, gen_loss, ret_loss = trainer.train_epoch(train_loader, epoch)
+        
         if local_rank == 0:
             print(f"Epoch {epoch+1}/{trainer.total_epochs} - Completed. Avg Loss: {loss:.4f} (Gen: {gen_loss:.4f}, Ret: {ret_loss:.4f})\n")
+            model_obj = model.module if hasattr(model, "module") else model
+            torch.save({
+                "epoch": epoch + 1,
+                "model_state": model_obj.state_dict(),
+                "optimizer_state": optimizer.state_dict()
+            }, epoch_ckpt)
+            print(f"Saved Epoch {epoch + 1} checkpoint to {epoch_ckpt}.")
         
     # 8. Index Corpus post-training using trained bottom layers (L_B) on Rank 0
     if local_rank == 0:
