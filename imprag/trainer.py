@@ -120,7 +120,11 @@ class ImpRAGTrainer:
                                 rep_v = v.repeat_interleave(batch_size, dim=0)
                                 safe_update_dynamic_cache(replicated_cache, rep_k, rep_v, l)
                                 
-                        k_max_len = model_obj.k_passages * model_obj.max_passage_len
+                        if hasattr(replicated_cache, "key_cache") and len(replicated_cache.key_cache) > model_obj.b and replicated_cache.key_cache[model_obj.b] is not None and replicated_cache.key_cache[model_obj.b].ndim >= 3:
+                            k_max_len = replicated_cache.key_cache[model_obj.b].shape[2]
+                        else:
+                            k_max_len = model_obj.k_passages * model_obj.max_passage_len
+                            
                         query_len = replicated_full_ids.shape[1]
                         position_ids = torch.arange(k_max_len, k_max_len + query_len, device=self.device)
                         position_ids = position_ids.unsqueeze(0).repeat(batch_size * batch_size, 1)
@@ -128,7 +132,8 @@ class ImpRAGTrainer:
                         outputs_rep = model_obj.base_model(
                             input_ids=replicated_full_ids,
                             past_key_values=replicated_cache,
-                            position_ids=position_ids
+                            position_ids=position_ids,
+                            attention_mask=None
                         )
                         
                         logits_rep = outputs_rep.logits

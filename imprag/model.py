@@ -316,7 +316,10 @@ class ImpRAGModel(nn.Module):
         self.eval()
         with torch.no_grad():
             batch_size, query_len = query_ids.shape
-            k_max_len = self.k_passages * self.max_passage_len
+            if hasattr(custom_past_key_values, "key_cache") and len(custom_past_key_values.key_cache) > self.b and custom_past_key_values.key_cache[self.b] is not None and custom_past_key_values.key_cache[self.b].ndim >= 3:
+                k_max_len = custom_past_key_values.key_cache[self.b].shape[2]
+            else:
+                k_max_len = self.k_passages * self.max_passage_len
             
             # Initial forward pass of the query
             position_ids = torch.arange(k_max_len, k_max_len + query_len, device=query_ids.device)
@@ -325,7 +328,8 @@ class ImpRAGModel(nn.Module):
             outputs = self.base_model(
                 input_ids=query_ids,
                 past_key_values=custom_past_key_values,
-                position_ids=position_ids
+                position_ids=position_ids,
+                attention_mask=None
             )
             
             next_token_logits = outputs.logits[:, -1, :]
@@ -340,13 +344,14 @@ class ImpRAGModel(nn.Module):
             
             # Generation loop
             for i in range(max_new_tokens - 1):
-                next_pos = k_max_len + query_len + i + 1
+                next_pos = k_max_len + query_len + i
                 pos_tensor = torch.tensor([[next_pos]], device=query_ids.device).repeat(batch_size, 1)
                 
                 outputs = self.base_model(
                     input_ids=next_tokens,
                     past_key_values=past_key_values,
-                    position_ids=pos_tensor
+                    position_ids=pos_tensor,
+                    attention_mask=None
                 )
                 
                 next_token_logits = outputs.logits[:, -1, :]
