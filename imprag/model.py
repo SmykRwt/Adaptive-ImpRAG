@@ -242,7 +242,7 @@ class ImpRAGModel(nn.Module):
                     sub_ids = passage_ids[i : i + sub_batch_size]
                     sub_mask = attention_mask[i : i + sub_batch_size] if attention_mask is not None else None
                     with torch.no_grad():
-                        sub_out = self.base_model(input_ids=sub_ids, attention_mask=sub_mask, use_cache=True)
+                        sub_out = self.base_model(input_ids=sub_ids, attention_mask=sub_mask, use_cache=True, past_key_values=DynamicCache())
                     for l in range(self.b, self.t + 1):
                         k_s, v_s = extract_kv_for_layer(sub_out.past_key_values, l)
                         all_k_states[l].append(k_s)
@@ -251,7 +251,7 @@ class ImpRAGModel(nn.Module):
                 passage_cache_map = {l: (torch.cat(all_k_states[l], dim=0), torch.cat(all_v_states[l], dim=0)) for l in range(self.b, self.t + 1)}
             else:
                 with torch.no_grad():
-                    outputs = self.base_model(input_ids=passage_ids, attention_mask=attention_mask, use_cache=True)
+                    outputs = self.base_model(input_ids=passage_ids, attention_mask=attention_mask, use_cache=True, past_key_values=DynamicCache())
                 passage_cache_map = {l: extract_kv_for_layer(outputs.past_key_values, l) for l in range(self.b, self.t + 1)}
         finally:
             self.base_model.train(was_training)
@@ -341,6 +341,8 @@ class ImpRAGModel(nn.Module):
                 
             generated = [next_tokens]
             past_key_values = outputs.past_key_values
+            if isinstance(past_key_values, tuple) and hasattr(DynamicCache, "from_legacy_cache"):
+                past_key_values = DynamicCache.from_legacy_cache(past_key_values)
             
             # Generation loop
             for i in range(max_new_tokens - 1):
@@ -363,5 +365,7 @@ class ImpRAGModel(nn.Module):
                     
                 generated.append(next_tokens)
                 past_key_values = outputs.past_key_values
+                if isinstance(past_key_values, tuple) and hasattr(DynamicCache, "from_legacy_cache"):
+                    past_key_values = DynamicCache.from_legacy_cache(past_key_values)
                 
             return torch.cat(generated, dim=-1)

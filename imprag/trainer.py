@@ -105,7 +105,8 @@ class ImpRAGTrainer:
                         with torch.no_grad():
                             passage_outputs = model_obj.base_model(
                                 input_ids=candidate_passage_ids,
-                                use_cache=True
+                                use_cache=True,
+                                past_key_values=DynamicCache()
                             )
                             passage_cache = passage_outputs.past_key_values
                     finally:
