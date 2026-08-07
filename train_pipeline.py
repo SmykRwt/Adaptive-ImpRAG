@@ -63,6 +63,8 @@ def main():
     parser.add_argument("--lr", type=float, default=3e-5, help="Learning rate")
     parser.add_argument("--use_amp", action="store_true", default=True, help="Use Automatic Mixed Precision (AMP)")
     parser.add_argument("--pooling_type", type=str, default="last_token", choices=["last_token", "mean"], help="Pooling type for retrievals")
+    parser.add_argument("--max_train_samples", type=int, default=20000, help="Maximum training queries to use")
+    parser.add_argument("--max_eval_samples", type=int, default=2000, help="Maximum evaluation queries to use")
     parser.add_argument("--num_workers", type=int, default=4, help="Data loader workers")
     args = parser.parse_args()
 
@@ -99,15 +101,24 @@ def main():
         
     if local_rank == 0:
         print(f"Loaded {len(passages)} corpus passages.")
-        print(f"Loaded {len(train_data)} training queries with pseudo-labels.")
+        print(f"Loaded {len(train_data)} total training queries with pseudo-labels.")
     
-    # Split training data into train (80%) and eval (20%)
+    # Limit samples according to max_train_samples and max_eval_samples
+    if args.max_train_samples and args.max_train_samples < len(train_data):
+        total_used = args.max_train_samples + (args.max_eval_samples or 1000)
+        train_data = train_data[:total_used]
+        
     split_idx = int(len(train_data) * 0.8)
+    if args.max_train_samples and split_idx > args.max_train_samples:
+        split_idx = args.max_train_samples
+        
     train_split = train_data[:split_idx]
     eval_split = train_data[split_idx:]
+    if args.max_eval_samples and len(eval_split) > args.max_eval_samples:
+        eval_split = eval_split[:args.max_eval_samples]
     
     if local_rank == 0:
-        print(f"Train split size: {len(train_split)}, Eval split size: {len(eval_split)}")
+        print(f"Train split size: {len(train_split)} ({len(train_split) // args.batch_size} batches/epoch), Eval split size: {len(eval_split)}")
     
     # 2. Load model and tokenizer
     if local_rank == 0:
