@@ -131,9 +131,9 @@ class ImpRAGTrainer:
                         position_ids = torch.arange(k_max_len, k_max_len + query_len, device=self.device)
                         position_ids = position_ids.unsqueeze(0).repeat(batch_size * batch_size, 1)
                         
-                        # Sub-chunk the self-distillation forward pass (max 16 sequences per pass) to prevent NVML VRAM allocation peaks
+                        # Sub-chunk the self-distillation forward pass (max 4 sequences per pass) to prevent NVML VRAM allocation peaks
                         loss_per_seq_list = []
-                        sub_chunk_size = 16
+                        sub_chunk_size = 4
                         num_replicated = batch_size * batch_size
                         loss_fct = nn.CrossEntropyLoss(reduction="none")
                         
