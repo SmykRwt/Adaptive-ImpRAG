@@ -300,13 +300,13 @@ class ImpRAGModel(nn.Module):
         position_ids = torch.arange(k_max_len, k_max_len + query_len, device=query_ids.device)
         position_ids = position_ids.unsqueeze(0).repeat(batch_size, 1)
         
-        # Perform the forward pass
+        # Perform the forward pass with attention_mask=None so Llama dynamically computes per-layer causal mask matching prepended past_key_values length
         return self.base_model(
             input_ids=query_ids,
             past_key_values=custom_past_key_values,
             position_ids=position_ids,
             labels=labels,
-            attention_mask=attention_mask
+            attention_mask=None
         )
 
     def generate(self, query_ids, custom_past_key_values, max_new_tokens=20, temperature=1.0):
