@@ -37,8 +37,8 @@ def load_resources():
             tokenizer.pad_token = tokenizer.eos_token
         tokenizer.padding_side = "right"
         
-        # Use bfloat16 for GPU, float16 for CPU to prevent Windows 32GB RAM OOM crashes
-        model_dtype = torch.bfloat16 if torch.cuda.is_available() else torch.float16
+        # Use bfloat16 for GPU, float32 for CPU
+        model_dtype = torch.bfloat16 if torch.cuda.is_available() else torch.float32
         
         base_model = AutoModelForCausalLM.from_pretrained(
             checkpoint_dir,
@@ -172,6 +172,9 @@ with gr.Blocks() as demo:
 
 if __name__ == "__main__":
     demo.launch(
+        server_name="0.0.0.0",
+        server_port=7860,
+        share=True,
         theme=gr.themes.Soft(primary_hue="blue", secondary_hue="indigo"),
         prevent_thread_lock=False
     )
