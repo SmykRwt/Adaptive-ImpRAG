@@ -79,18 +79,17 @@ def qa_interface(query):
         return "Please enter a valid question.", ""
         
     try:
-        formatted_query = f"Q: {query} A: "
+        formatted_query = query.strip()
         q_enc = tokenizer([formatted_query], return_tensors="pt")
         q_ids = q_enc.input_ids.to(device)
         q_mask = q_enc.attention_mask.to(device)
         
         with torch.no_grad():
-            # 1. Embed query
+            # 1. Embed raw query (FAISS search handles dual-centering internally)
             E_q = model.get_retriever_embeddings(q_ids, attention_mask=q_mask, is_query=True)
-            E_q_norm = F.normalize(E_q, p=2, dim=-1)
             
             # 2. Search FAISS index
-            distances, indices = faiss_index.search(E_q_norm.float().cpu().numpy(), k=5)
+            distances, indices = faiss_index.search(E_q.float().cpu().numpy(), k=5)
             ret_passages = [passages[idx] for idx in indices[0] if idx != -1]
             
             # Ensure we always have at least k_passages (5) to prevent batch size shape crashes

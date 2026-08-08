@@ -87,8 +87,7 @@ def main():
                 print("Exiting interactive interface. Goodbye!")
                 break
                 
-            # Format prompt for the model
-            formatted_query = f"Q: {query} A: "
+            formatted_query = query.strip()
             
             # Embed the query
             q_enc = tokenizer([formatted_query], return_tensors="pt")
@@ -97,10 +96,9 @@ def main():
             
             with torch.no_grad():
                 E_q = model.get_retriever_embeddings(q_ids, attention_mask=q_mask, is_query=True)
-                E_q_norm = F.normalize(E_q, p=2, dim=-1)
                 
-                # Query FAISS index for top 5 documents
-                distances, indices = faiss_index.search(E_q_norm.float().cpu().numpy(), k=5)
+                # Query FAISS index for top 5 documents (faiss_index handles dual-centering internally)
+                distances, indices = faiss_index.search(E_q.float().cpu().numpy(), k=5)
                 ret_passages = [passages[idx] for idx in indices[0] if idx != -1]
                 
                 while len(ret_passages) < model.k_passages:
