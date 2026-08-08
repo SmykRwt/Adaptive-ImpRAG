@@ -48,8 +48,8 @@ def main():
     tokenizer = AutoTokenizer.from_pretrained(checkpoint_dir)
     tokenizer.pad_token = tokenizer.eos_token
     
-    # Use bfloat16 for GPU, float32 for CPU
-    model_dtype = torch.bfloat16 if torch.cuda.is_available() else torch.float32
+    # Use bfloat16 for GPU, float16 for CPU to prevent Windows 32GB RAM OOM crashes
+    model_dtype = torch.bfloat16 if torch.cuda.is_available() else torch.float16
 
     base_model = AutoModelForCausalLM.from_pretrained(
         checkpoint_dir,

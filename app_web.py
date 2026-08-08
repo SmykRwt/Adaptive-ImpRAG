@@ -37,8 +37,8 @@ def load_resources():
             tokenizer.pad_token = tokenizer.eos_token
         tokenizer.padding_side = "right"
         
-        # Use bfloat16 for GPU, float32 for CPU to prevent CPU bfloat16 matrix multiplication crashes
-        model_dtype = torch.bfloat16 if torch.cuda.is_available() else torch.float32
+        # Use bfloat16 for GPU, float16 for CPU to prevent Windows 32GB RAM OOM crashes
+        model_dtype = torch.bfloat16 if torch.cuda.is_available() else torch.float16
         
         base_model = AutoModelForCausalLM.from_pretrained(
             checkpoint_dir,

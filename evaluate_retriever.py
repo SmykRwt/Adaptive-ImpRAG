@@ -25,9 +25,10 @@ def main():
     # 1. Load resources
     print("Loading models and index...")
     tokenizer = AutoTokenizer.from_pretrained(checkpoint_dir)
+    model_dtype = torch.bfloat16 if torch.cuda.is_available() else torch.float16
     base_model = AutoModelForCausalLM.from_pretrained(
         checkpoint_dir, 
-        torch_dtype=torch.bfloat16, 
+        torch_dtype=model_dtype, 
         low_cpu_mem_usage=True
     )
     # Slice and wrap the model dynamically based on number of layers
