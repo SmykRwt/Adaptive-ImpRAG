@@ -1,109 +1,130 @@
 # 🧠 Adaptive ImpRAG (Implicit Retrieval-Augmented Generation)
 
-This repository contains a **paper-faithful baseline implementation** of the original **ImpRAG (Implicit Retrieval-Augmented Generation)** paper. It is fully scaled to run on high-performance single-GPU (e.g., NVIDIA A100 40GB/80GB) or multi-GPU cluster configurations, using a sliced **Llama-3-8B** (`meta-llama/Meta-Llama-3-8B-Instruct`) architecture by default, with dynamic support for $k=5$ injected passages and 128-token passage budgets.
+This repository contains:
+1. A **100% paper-faithful baseline implementation** of the original **ImpRAG (Implicit Retrieval-Augmented Generation)** paper (*Zhang et al., Meta / Rutgers*).
+2. The complete **ADAPTIVE ImpRAG** architecture introducing dynamic adaptivity across **4 key dimensions**:
+   - **Dimension 1: Dynamic Retrieval Decision (When to Retrieve)** — Bypasses FAISS search and KV injection for parametric queries.
+   - **Dimension 2: Dynamic $k$ Allocation (How Much to Retrieve)** — Adaptively allocates $k \in \{1, 2, 5, 10\}$ based on score distribution entropy and top-margin.
+   - **Dimension 3: Adaptive Layer Slicing & Injection Boundaries ($b(q), t(q)$)** — Dynamically routes cache injection depth by task complexity.
+   - **Dimension 4: Adaptive GQA Head Attention Pooling** — Dynamic query-conditioned learned head weighting replacing uniform head averaging.
 
 ---
 
 ## 📋 Architectural Overview
 
-The codebase slices the base transformer model into three distinct functional groups, matching the inference pipeline in Section 3.1 of the paper:
+### 1. Paper-Faithful ImpRAG Slicing
+An $N$-layer decoder-only language model (e.g. `Meta-Llama-3-8B-Instruct`) is partitioned vertically into three groups:
 
-1. **Bottom Layers ($L_B$: Layers $0 \dots b$)**: 
-   * Acts as the **Retriever**.
-   * Hooks into the `q_proj` and `k_proj` attention modules at layer $b$ (automatically set: $b=14$ for 28-layer models like Llama-3-3B; $b=15$ for 32-layer models like Llama-3-8B).
-   * Applies **Grouped-Query Attention (GQA) group-averaging** to reduce query representation dimensions to **256**.
-   * Uses **Dual-Centering** to align representations and combat anisotropy.
-2. **Middle Layers ($L_M$: Layers $b \dots t$)**: 
-   * Acts as the **Implicit Cache** (automatically set: layers $14 \dots 19$ for 3B; layers $15 \dots 23$ for 8B).
-   * Encodes the top-$k$ retrieved passages and prepends their keys/values into the attention states of middle layers during generation.
-3. **Top Layers ($L_T$: Layers $t \dots \text{end}$)**: 
-   * Acts as the **Generator (Reader)** (automatically set: layers $20 \dots 27$ for 3B; layers $24 \dots 31$ for 8B).
-   * Autoregressively generates the final answer using the enriched cache.
+1. **Bottom Layers ($L_B$: Layers $0 \dots b$, default $b=7$)**:
+   - Acts as the **Retriever**.
+   - Hooks into $W_Q$ and $W_K$ projection modules at layer $b$.
+   - Applies Grouped-Query Attention (GQA) group-averaging ($g = h_q / h_k$) to query projections.
+   - Pools last token to extract query embedding $E_q \in \mathbb{R}^{h_k d_h}$ and passage embedding $E_p \in \mathbb{R}^{h_k d_h}$.
+   - Inner product similarity: $s(q, p) = E_q \cdot E_p$.
+   - Dual-Centering applied during FAISS retrieval to combat representation anisotropy.
 
----
+2. **Middle Layers ($L_M$: Layers $b \dots t$, default $t=23$ for 8B; $t=19$ for 3B)**:
+   - Acts as the **Implicit Cache / Reader**.
+   - Uses **Full Attention Concatenated Passage Encoding** (Section 3.1 & Appendix A, Table 6) where all $k$ retrieved passages are concatenated and jointly encoded.
+   - Injects passage KV states into `DynamicCache` strictly inside layers $b \dots t$.
 
-## 🔄 Training & Optimization Dynamics
-
-The training loop implements a two-stage training process (InfoNCE Warmup + KL Distillation) with high-fidelity performance upgrades matching the paper's cluster execution details:
-
-### 1. In-Batch Negatives InfoNCE
-During the **Warmup Stage** (Epochs 1..warmup_epochs), query embeddings $E_q \in \mathbb{R}^{B \times D}$ and positive passage embeddings $E_p \in \mathbb{R}^{B \times D}$ in the batch are dot-product matched:
-$$\text{scores} = \frac{E_q E_p^T}{0.05} \quad (\text{shape } [B, B])$$
-The diagonal elements act as positive matches, while all off-diagonal items in the batch act as negatives, trained using standard cross-entropy.
-
-### 2. In-Batch Self-Distillation (KL)
-During the **Self-Distillation Stage**, the teacher model evaluates target response log-likelihoods conditioned on every positive passage in the batch, yielding a soft target distribution $L \in \mathbb{R}^{B \times B}$. The retriever is trained by minimizing the KL-divergence between the retriever score distributions and these soft targets.
-
-### 3. Selective Weight Freezing
-To prevent catastrophic forgetting of the model's pre-trained generation capabilities, **all reader and generator weights are frozen**. Only the key ($W_K$) and query ($W_Q$) projection matrices of the bottom layers group ($L_B$, layers $0 \dots b$) accumulate gradients and update during optimization, speeding up training by 3x.
-
-### 4. Distributed Multi-GPU (DDP) Scaling
-The codebase supports PyTorch **Distributed Data Parallel (DDP)**:
-* Uses `DistributedSampler` to split dataset batches cleanly across GPUs.
-* Uses **embedding all-gather** (`dist.all_gather`) to collect embeddings across all active GPUs, expanding the in-batch negatives pool from $B-1$ to $(N \times B) - 1$.
-* Restricts index building, centering vector calculations, and final metric evaluations to **Rank 0 (Main GPU)** to prevent file-write collisions.
+3. **Top Layers ($L_T$: Layers $t+1 \dots N-1$)**:
+   - Acts as the **Generator**.
+   - Cross-attention to passage KV cache is disabled in top layers to reduce memory overhead.
+   - Autoregressively generates answers with shifted position IDs ($k \cdot l_{\max}$).
 
 ---
 
-## 🚀 Teammate Quickstart Guide
+## 🌟 Adaptive ImpRAG (The 4 Dimensions)
 
-To run this project locally or on a GPU server, follow these steps:
-
-### 1. Clone & Install Dependencies
-First, clone the repository and install the required libraries:
-```bash
-pip install -r requirements.txt
+```
+                       Input Query q
+                             │
+                             ▼
+              ┌──────────────────────────────┐
+              │  Bottom Layers L_B (0 .. b)  │
+              └──────────────┬───────────────┘
+                             │
+                             ▼
+              ┌──────────────────────────────┐
+              │   Adaptive GQA Head Pooling  │ ──► Dynamic Learned Head Weights
+              │    (Dimension 4: α_h(q))     │
+              └──────────────┬───────────────┘
+                             │
+                             ▼
+              ┌──────────────────────────────┐
+              │    Dynamic Retrieval Gate    │
+              │  (Dimension 1: When to Ret)  │
+              └──────┬────────────────┬──────┘
+                     │                │
+          Parametric │                │ Low-Confidence /
+        Bypass (k=0) │                │ Multi-Hop (k > 0)
+                     │                ▼
+                     │ ┌──────────────────────────────┐
+                     │ │      FAISS Index Search      │
+                     │ └──────────────┬───────────────┘
+                     │                │ Top Candidate Scores
+                     │                ▼
+                     │ ┌──────────────────────────────┐
+                     │ │  Dynamic k Budget Allocator  │ ──► k ∈ {1, 2, 5, 10}
+                     │ │ (Dimension 2: Entropy/Margin)│
+                     │ └──────────────┬───────────────┘
+                     │                │
+                     │                ▼
+                     │ ┌──────────────────────────────┐
+                     │ │  Adaptive Boundary Router    │ ──► [b(q), t(q)] Depth
+                     │ │  (Dimension 3: Cache Slicing)│
+                     │ └──────────────┬───────────────┘
+                     │                │ Concatenated Passage KV
+                     │                ▼
+                     │ ┌──────────────────────────────┐
+                     │ │  Middle Layers L_M (b .. t)  │◄── Dynamic Cache Injection
+                     │ └──────────────┬───────────────┘
+                     │                │
+                     └───────────────►▼
+                       ┌──────────────────────────────┐
+                       │  Top Layers L_T (t+1 .. N-1) │
+                       │    Autoregressive Decoder    │
+                       └──────────────────────────────┘
 ```
 
-### 2. Gain Llama-3 Hugging Face Access
-Ensure you have logged in via the Hugging Face CLI to authenticate download permissions for the gated `meta-llama` models:
+---
+
+## 🔄 Two-Stage Multi-Task Training
+
+The training pipeline optimizes the joint objective (Eq 2):
+$$\mathcal{J} = \mathcal{J}_{	ext{gen}}(r \mid q, \mathcal{C}) + \lambda \cdot \mathcal{J}_{	ext{ret}}(q, \mathcal{C})$$
+
+1. **Warmup Stage (Epochs 1..warmup_epochs)**:
+   - Multi-Label NCE loss (Eq 3) over pseudo-positives $\mathcal{P}(q)$ and hard negatives $\mathcal{N}_h(q)$ with in-batch negatives.
+2. **Self-Distillation Stage (Remaining epochs)**:
+   - KL-divergence distillation (Eq 4-6) between teacher LM response likelihoods $P_T(p \mid q, r)$ and retriever distribution $P_R(p \mid q)$.
+3. **Weight Freezing**:
+   - Generator/reader layers frozen; updates applied to $W_Q, W_K$ of layers $0 \dots b$ and adaptive routing modules.
+
+---
+
+## 🚀 Quickstart & Verification
+
+### 1. Run Verification Test Suites
+Verify Baseline ImpRAG and all 4 dimensions of Adaptive ImpRAG:
 ```bash
-huggingface-cli login
+python test_baseline_verification.py
+python test_adaptive_verification.py
 ```
 
-### 3. Prepare the Wikipedia Corpus (Simple Wikipedia, ~2,000,000 passages)
-Prepare the evaluation corpus. Running this downloads Simple Wikipedia and chunks it into 120-word passages:
+### 2. Run Small-Scale Demo Simulation
 ```bash
-python prepare_wiki_corpus.py --dataset wikipedia_simple
+python run_demo.py
 ```
 
-### 4. Mine Pseudo-Labels (Streams 50,000 training queries)
-Stream NQ and HotpotQA training queries, batch-embed them on the GPU, and use GPU-accelerated FAISS search to mine pseudo-labels:
-```bash
-python generate_pseudo_labels.py --max_queries 25000
-```
-
-### 5. Launch Training
-#### Option A: Single-GPU training (with Gradient Accumulation & AMP)
-```bash
-python train_pipeline.py --epochs 6 --accumulation_steps 16 --use_amp
-```
-#### Option B: Distributed Multi-GPU DDP training (e.g., 4 GPUs)
-```bash
-torchrun --nproc_per_node=4 train_pipeline.py --epochs 6 --accumulation_steps 8 --use_amp
-```
-
-### 6. Launch the Web Interface (Gradio)
-To visually search passages and chat with the model in real-time, run:
+### 3. Launch Interactive Gradio Web Interface
 ```bash
 python app_web.py
 ```
-Open **`http://127.0.0.1:7860`** in your browser.
+Open **`http://127.0.0.1:7860`** to interact with the full 4D Adaptive system and view real-time decision telemetry.
 
----
-
-## 🛠️ Diagnostics & Evaluation Scripts
-
-To test the health and mathematics of the retrieval pipeline, we included two diagnostic scripts:
-
-### 1. Retrieval Debugger
-Inspect query representation norms, raw corpus keyword scans, and top-10 retrieval similarity rankings for any query:
+### 4. Full GPU / DDP Training Pipeline
 ```bash
-python debug_retrieval.py "Who was Cicely Mary Barker?"
-```
-
-### 2. Retrieval Metrics Evaluator
-Calculate retrieval performance metrics (**Recall@1**, **Recall@5**, **Recall@10**, and **MRR**) on the evaluation dataset:
-```bash
-python evaluate_retriever.py
+python train_pipeline.py --epochs 6 --accumulation_steps 8 --use_amp
 ```

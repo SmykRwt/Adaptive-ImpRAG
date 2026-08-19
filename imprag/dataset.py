@@ -2,7 +2,7 @@ import random
 import torch
 from torch.utils.data import Dataset
 
-# Prompt templates from Table 1 and Table 9
+# Prompt templates from Table 1 and Table 9 in the ImpRAG paper
 TEMPLATES = {
     "nq": "Q: {question} A: {answer}",
     "hopo": "Q: {question} A: {answer}",
@@ -29,23 +29,19 @@ def format_prompt(task_type, **kwargs):
 
 class SyntheticTaskGenerator:
     """
-    Helper to generate synthetic tasks:
+    Helper to generate synthetic tasks (Section 4.1):
     1. Phrase Denoising
     2. Next/Previous Sentence Generation
     """
     @staticmethod
     def generate_phrase_denoising(text):
-        """
-        Takes a paragraph, inserts [START] and [END] around a random phrase,
-        and returns the context (prompt) and target phrase (answer).
-        """
         words = text.split()
         if len(words) < 10:
             return text, ""
             
         phrase_len = random.randint(2, 5)
-        start_idx = random.randint(2, len(words) - phrase_len - 2)
-        end_idx = start_idx + phrase_len
+        start_idx = random.randint(2, max(2, len(words) - phrase_len - 2))
+        end_idx = min(len(words), start_idx + phrase_len)
         
         phrase = " ".join(words[start_idx:end_idx])
         
@@ -53,16 +49,10 @@ class SyntheticTaskGenerator:
         context = " ".join(words_with_tags)
         
         prompt = format_prompt("phrase_denoising", context=context, answer="")
-        # Remove trailing "A: " for prompt-only encoding, or return full pair
         return prompt, phrase
 
     @staticmethod
     def generate_sentence_gen(text):
-        """
-        Splits a paragraph into sentences, picks consecutive ones,
-        and returns the first sentence, direction, and target sentence.
-        """
-        # A simple sentence splitter using punctuation
         sentences = [s.strip() for s in text.replace("?", ".").replace("!", ".").split(".") if len(s.strip()) > 10]
         if len(sentences) < 2:
             return text, ""
@@ -86,17 +76,10 @@ class ImpRAGDataset(Dataset):
     Each sample contains:
     - query: string query/prompt
     - answer: string answer/response
-    - positive_passages: list of positive passage strings
-    - negative_passages: list of negative passage strings (hard + random)
+    - positive_passages: list of positive passage strings (P(q))
+    - negative_passages: list of hard negative passage strings (Nh(q))
     """
     def __init__(self, data_list):
-        """
-        data_list: list of dicts. Each dict must contain:
-          - "query": str
-          - "answer": str
-          - "positive_passages": list of str (optional)
-          - "negative_passages": list of str (optional)
-        """
         self.data = data_list
 
     def __len__(self):
@@ -107,46 +90,88 @@ class ImpRAGDataset(Dataset):
         return {
             "query": item["query"],
             "answer": item["answer"],
-            "positive_passages": item.get("positive_passages", []),
-            "negative_passages": item.get("negative_passages", [])
+            "positive_passages": item.get("positive_passages", item.get("pos", [])),
+            "negative_passages": item.get("negative_passages", item.get("negs", []))
         }
 
-def collate_fn(batch, tokenizer, max_query_len=128, max_passage_len=32, num_candidates=5):
+def collate_fn(batch, tokenizer, max_query_len=128, max_passage_len=128, max_positives_per_query=5, max_negatives_per_query=5):
     """
-    Collation function to prepare batch tensors with in-batch negatives.
+    Collation function preparing:
+    1. Query tokens and attention mask.
+    2. Full query + response sequences and labels with -100 masking on query tokens.
+    3. Candidate passage pool: includes all pseudo-positives P(q) and hard negatives Nh(q) across batch items.
+    4. positive_mask: [batch_size, num_total_candidates] boolean matrix identifying positive candidates for each query.
+    5. primary_positive_ids: primary positive passage tokens for reader generation training.
     """
+    batch_size = len(batch)
     queries = [item["query"] for item in batch]
     answers = [item["answer"] for item in batch]
     
-    # Tokenize query prompts and answers
+    # 1. Tokenize query prompts
     tokenized_queries = tokenizer(queries, padding=True, truncation=True, max_length=max_query_len, return_tensors="pt")
     
-    # Tokenize query + answer sequences for causal language modeling loss
-    full_sequences = [f"{q} {a}" for q, a in zip(queries, answers)]
-    tokenized_full = tokenizer(full_sequences, padding=True, truncation=True, max_length=max_query_len + 32, return_tensors="pt")
+    # 2. Tokenize full sequences (query + answer) for causal language modeling
+    full_sequences = [f"{q.strip()} {a.strip()}" for q, a in zip(queries, answers)]
+    tokenized_full = tokenizer(full_sequences, padding=True, truncation=True, max_length=max_query_len + 64, return_tensors="pt")
     
     # Create labels where all prompt tokens are marked as -100
     labels = tokenized_full.input_ids.clone()
-    for i in range(len(batch)):
-        q_len = len(tokenizer.encode(queries[i]))
+    for i in range(batch_size):
+        q_len = len(tokenizer.encode(queries[i].strip(), add_special_tokens=False))
+        # Ensure we do not mask the entire sequence
+        q_len = min(q_len, labels.shape[1] - 1)
         labels[i, :q_len] = -100
         
-    # Extract only the positive passage for each query
-    pos_passages = []
-    for item in batch:
-        pos = item["positive_passages"]
-        if len(pos) == 0:
-            pos_passages.append("Dummy positive passage.")
-        else:
-            pos_passages.append(pos[0])
+    # 3. Assemble Candidate Passages pool: P(q) + Nh(q)
+    all_candidate_texts = []
+    # Map (batch_idx, candidate_idx) -> bool
+    positive_flags = []
+    
+    primary_positives = []
+    
+    for i, item in enumerate(batch):
+        pos_list = item["positive_passages"]
+        neg_list = item["negative_passages"]
+        
+        # Take primary positive for reader generation
+        primary_p = pos_list[0] if len(pos_list) > 0 else "No relevant passage available."
+        primary_positives.append(primary_p)
+        
+        # Add positives
+        used_pos = pos_list[:max_positives_per_query] if len(pos_list) > 0 else [primary_p]
+        for p in used_pos:
+            cand_idx = len(all_candidate_texts)
+            all_candidate_texts.append(p)
+            positive_flags.append((i, cand_idx))
+            
+        # Add hard negatives
+        used_negs = neg_list[:max_negatives_per_query]
+        for n in used_negs:
+            all_candidate_texts.append(n)
             
     # Tokenize candidate passages
-    tokenized_candidates = tokenizer(pos_passages, padding=True, truncation=True, max_length=max_passage_len, return_tensors="pt")
+    tokenized_candidates = tokenizer(
+        all_candidate_texts,
+        padding=True,
+        truncation=True,
+        max_length=max_passage_len,
+        return_tensors="pt"
+    )
     
-    # Positive mask for in-batch negatives is the identity matrix [batch_size, batch_size]
-    batch_size = len(batch)
-    positive_mask = torch.eye(batch_size, dtype=torch.bool)
+    # Tokenize primary positives for generator loss
+    tokenized_primary_pos = tokenizer(
+        primary_positives,
+        padding=True,
+        truncation=True,
+        max_length=max_passage_len,
+        return_tensors="pt"
+    )
     
+    num_candidates = len(all_candidate_texts)
+    positive_mask = torch.zeros((batch_size, num_candidates), dtype=torch.bool)
+    for q_idx, c_idx in positive_flags:
+        positive_mask[q_idx, c_idx] = True
+        
     return {
         "query_ids": tokenized_queries.input_ids,
         "query_attention_mask": tokenized_queries.attention_mask,
@@ -155,5 +180,7 @@ def collate_fn(batch, tokenizer, max_query_len=128, max_passage_len=32, num_cand
         "labels": labels,
         "candidate_passage_ids": tokenized_candidates.input_ids,
         "candidate_passage_attention_mask": tokenized_candidates.attention_mask,
-        "positive_mask": positive_mask
+        "positive_mask": positive_mask,
+        "primary_positive_ids": tokenized_primary_pos.input_ids,
+        "primary_positive_attention_mask": tokenized_primary_pos.attention_mask
     }

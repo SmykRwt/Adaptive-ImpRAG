@@ -39,20 +39,20 @@ def main():
         torch_dtype=torch.bfloat16, 
         low_cpu_mem_usage=True
     )
-    # Slice and wrap the model dynamically based on number of layers
+    # Slice and wrap the model dynamically based on number of layers (Section 4.1 in paper)
     num_layers = base_model.config.num_hidden_layers
     if num_layers == 32:
-        b = 15
+        b = 7
         t = 23
     elif num_layers == 28:
-        b = 14
+        b = 7
         t = 19
     else:
-        b = int(num_layers * 0.5)
-        t = int(num_layers * 0.7)
+        b = 7
+        t = int(num_layers * 0.75)
         print(f"Warning: Unexpected layer count {num_layers}. Slicing: b={b}, t={t}")
         
-    model = ImpRAGModel(base_model, b=b, t=t, pooling_type="mean")
+    model = ImpRAGModel(base_model, b=b, t=t, pooling_type="last_token")
     model.eval()
     
     faiss_index = ImpRAGFAISSIndex.load(index_path)

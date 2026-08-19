@@ -3,17 +3,21 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.distributed as dist
 from transformers.cache_utils import DynamicCache
-from imprag.loss import SelfDistillationLoss
-
-from imprag.model import extract_kv_for_layer, safe_update_dynamic_cache
+from imprag.loss import MultiLabelNCELoss, SelfDistillationLoss, compute_generation_loss
+from imprag.model import extract_kv_for_layer, safe_update_dynamic_cache, pad_cache_to_num_layers
 
 class ImpRAGTrainer:
     """
-    Two-stage trainer for ImpRAG using in-batch negatives with DDP multi-GPU support:
-    - Epochs 1..warmup_epochs: Warmup stage using standard cross-entropy loss over gathered in-batch dot products.
-    - Remaining epochs: Self-distillation stage using language model perplexity distillation over local in-batch candidates.
+    Two-stage trainer for ImpRAG matching Section 3.2 in the paper:
+    1. Warmup Stage (Epochs 1..warmup_epochs):
+       - Multi-Label NCE loss (Eq 3) over pseudo-positives P(q) and hard + in-batch negatives.
+    2. Self-Distillation Stage (Remaining epochs):
+       - Self-distillation KL-divergence loss (Eq 4-6) against LM response log-likelihoods.
+    3. Joint Multi-Task Objective (Eq 2):
+       - J = J_gen(r | q, C) + lambda_ret * J_ret(q, C).
     """
-    def __init__(self, model, optimizer, warmup_epochs=3, total_epochs=5, lambda_ret=1.0, device="cpu", tau_t=1.0, tau_r=1.0, accumulation_steps=1, use_amp=False, scheduler=None):
+    def __init__(self, model, optimizer, warmup_epochs=3, total_epochs=5, lambda_ret=1.0, 
+                 device="cpu", tau_t=1.0, tau_r=1.0, accumulation_steps=1, use_amp=False, scheduler=None):
         self.model = model
         self.optimizer = optimizer
         self.warmup_epochs = warmup_epochs
@@ -24,11 +28,10 @@ class ImpRAGTrainer:
         self.use_amp = use_amp
         self.scheduler = scheduler
         
-        self.warmup_loss_fn = nn.CrossEntropyLoss()
+        self.warmup_loss_fn = MultiLabelNCELoss(temperature=0.05)
         self.distill_loss_fn = SelfDistillationLoss(tau_t=tau_t, tau_r=tau_r)
         
-        if self.use_amp:
-            # GradScaler is not required or supported for bfloat16 in PyTorch (bfloat16 has 8-bit exponent)
+        if self.use_amp and torch.cuda.is_available():
             self.scaler = torch.cuda.amp.GradScaler(enabled=False)
         else:
             self.scaler = None
@@ -40,176 +43,149 @@ class ImpRAGTrainer:
         total_ret_loss = 0.0
         
         is_warmup = epoch < self.warmup_epochs
-        stage_name = "WARMUP" if is_warmup else "SELF-DISTILLATION"
+        stage_name = "WARMUP (NCE)" if is_warmup else "SELF-DISTILLATION (KL)"
         
         is_distributed = dist.is_initialized()
         rank = dist.get_rank() if is_distributed else 0
         world_size = dist.get_world_size() if is_distributed else 1
         
         self.optimizer.zero_grad()
-        
-        # Unpack DDP wrapper if present
         model_obj = self.model.module if hasattr(self.model, "module") else self.model
         
         for batch_idx, batch in enumerate(dataloader):
-            # Move inputs to device
             query_ids = batch["query_ids"].to(self.device)
             full_ids = batch["full_ids"].to(self.device)
             labels = batch["labels"].to(self.device)
             candidate_passage_ids = batch["candidate_passage_ids"].to(self.device)
+            positive_mask = batch["positive_mask"].to(self.device)
+            primary_pos_ids = batch["primary_positive_ids"].to(self.device)
             
             batch_size = query_ids.shape[0]
-            if batch_size < 2:
+            if batch_size < 1:
                 continue
                 
-            query_attention_mask = batch["query_attention_mask"].to(self.device)
-            full_attention_mask = batch["full_attention_mask"].to(self.device)
-            candidate_passage_attention_mask = batch["candidate_passage_attention_mask"].to(self.device)
+            query_mask = batch["query_attention_mask"].to(self.device)
+            full_mask = batch["full_attention_mask"].to(self.device)
+            cand_mask = batch["candidate_passage_attention_mask"].to(self.device)
+            primary_pos_mask = batch["primary_positive_attention_mask"].to(self.device)
             
             autocast_context = torch.cuda.amp.autocast(dtype=torch.bfloat16) if self.use_amp else torch.cuda.amp.autocast(enabled=False)
             
             with autocast_context:
-                E_q = model_obj.get_retriever_embeddings(query_ids, attention_mask=query_attention_mask, is_query=True)
-                E_p = model_obj.get_retriever_embeddings(candidate_passage_ids, attention_mask=candidate_passage_attention_mask, is_query=False)
+                # 1. Compute Retriever Embeddings
+                E_q = model_obj.get_retriever_embeddings(query_ids, attention_mask=query_mask, is_query=True)
+                E_p = model_obj.get_retriever_embeddings(candidate_passage_ids, attention_mask=cand_mask, is_query=False)
                 
+                # Normalize embeddings for cosine/dot product
                 E_q_norm = F.normalize(E_q, p=2, dim=-1)
                 E_p_norm = F.normalize(E_p, p=2, dim=-1)
                 
                 if is_distributed:
-                    # All-gather positive passage embeddings across all GPUs for true paper-scale negatives
                     gathered_Ep = [torch.zeros_like(E_p_norm) for _ in range(world_size)]
                     dist.all_gather(gathered_Ep, E_p_norm)
-                    gathered_Ep_norm = torch.cat(gathered_Ep, dim=0)  # [N*B, D]
+                    gathered_Ep_norm = torch.cat(gathered_Ep, dim=0)
+                    scores = torch.matmul(E_q_norm, gathered_Ep_norm.transpose(0, 1))
                     
-                    scores = torch.matmul(E_q_norm, gathered_Ep_norm.transpose(0, 1)) / 0.05  # [B, N*B]
+                    # Pad positive_mask across gathered items
+                    gathered_mask = [torch.zeros_like(positive_mask) for _ in range(world_size)]
+                    gathered_mask[rank] = positive_mask
+                    full_pos_mask = torch.cat(gathered_mask, dim=1)
                 else:
-                    scores = torch.matmul(E_q_norm, E_p_norm.transpose(0, 1)) / 0.05  # [B, B]
+                    scores = torch.matmul(E_q_norm, E_p_norm.transpose(0, 1))  # [B, Num_candidates]
+                    full_pos_mask = positive_mask
                 
+                # 2. Retrieval Loss (Section 3.2.1)
                 if is_warmup:
-                    if is_distributed:
-                        # Diagonal index targets corresponding to the local rank offset
-                        targets = torch.arange(rank * batch_size, (rank + 1) * batch_size, device=self.device)
-                    else:
-                        targets = torch.arange(batch_size, device=self.device)
-                    ret_loss = self.warmup_loss_fn(scores, targets)
+                    # Multi-Label NCE Loss (Eq 3)
+                    ret_loss = self.warmup_loss_fn(scores, full_pos_mask)
                 else:
-                    # Compute self-distillation locally to avoid VRAM exhaustion
-                    scores_local = torch.matmul(E_q_norm, E_p_norm.transpose(0, 1)) / 0.05  # [B, B]
-                    
-                    replicated_full_ids = full_ids.repeat(batch_size, 1)
-                    replicated_labels = labels.repeat(batch_size, 1)
+                    # Self-Distillation Loss (Eq 4-6)
+                    # Evaluate response log-likelihoods conditioned on each candidate passage
+                    num_cands = candidate_passage_ids.shape[0]
+                    eval_cand_ids = candidate_passage_ids[:min(num_cands, batch_size * 5)]
+                    scores_subset = scores[:, :eval_cand_ids.shape[0]]
                     
                     was_tr = model_obj.base_model.training
                     model_obj.base_model.eval()
                     try:
                         with torch.no_grad():
-                            passage_outputs = model_obj.base_model(
-                                input_ids=candidate_passage_ids,
-                                use_cache=True,
-                                past_key_values=DynamicCache()
-                            )
-                            passage_cache = passage_outputs.past_key_values
+                            cand_cache = model_obj.base_model(
+                                input_ids=eval_cand_ids,
+                                use_cache=True
+                            ).past_key_values
+                            
+                            num_layers = model_obj._get_num_layers()
+                            log_probs_list = []
+                            loss_fct = nn.CrossEntropyLoss(reduction="none", ignore_index=-100)
+                            
+                            for c_idx in range(eval_cand_ids.shape[0]):
+                                single_cache = DynamicCache()
+                                sample_k = None
+                                for l in range(num_layers):
+                                    if model_obj.b <= l <= model_obj.t:
+                                        k_l, v_l = extract_kv_for_layer(cand_cache, l)
+                                        rep_k = k_l[c_idx:c_idx+1].repeat(batch_size, 1, 1, 1)
+                                        rep_v = v_l[c_idx:c_idx+1].repeat(batch_size, 1, 1, 1)
+                                        safe_update_dynamic_cache(single_cache, rep_k, rep_v, l)
+                                        sample_k = rep_k
+                                        
+                                if sample_k is not None:
+                                    pad_cache_to_num_layers(
+                                        single_cache,
+                                        num_layers=num_layers,
+                                        batch_size=batch_size,
+                                        num_heads=sample_k.shape[1],
+                                        head_dim=sample_k.shape[3],
+                                        device=sample_k.device,
+                                        dtype=sample_k.dtype
+                                    )
+                                    
+                                out_lm = model_obj(query_ids=full_ids, custom_past_key_values=single_cache)
+                                shift_logits = out_lm.logits[..., :-1, :].contiguous()
+                                shift_labels = labels[..., 1:].contiguous()
+                                
+                                token_loss = loss_fct(shift_logits.view(-1, shift_logits.size(-1)), shift_labels.view(-1))
+                                token_loss = token_loss.view(batch_size, -1)
+                                mask = (shift_labels != -100).float()
+                                seq_loss = (token_loss * mask).sum(dim=-1)
+                                log_probs_list.append(-seq_loss)
+                                
+                            log_probs_lm = torch.stack(log_probs_list, dim=1)  # [batch_size, num_eval_cands]
                     finally:
                         model_obj.base_model.train(was_tr)
                         
-                        replicated_cache = DynamicCache()
-                        num_layers = model_obj.base_model.config.n_layer if model_obj.model_type == "gpt2" else model_obj.base_model.config.num_hidden_layers
-                        
-                        for l in range(num_layers):
-                            if model_obj.b <= l <= model_obj.t:
-                                k, v = extract_kv_for_layer(passage_cache, l)
-                                rep_k = k.repeat_interleave(batch_size, dim=0)
-                                rep_v = v.repeat_interleave(batch_size, dim=0)
-                                safe_update_dynamic_cache(replicated_cache, rep_k, rep_v, l)
-                                
-                        if hasattr(replicated_cache, "key_cache") and len(replicated_cache.key_cache) > model_obj.b and replicated_cache.key_cache[model_obj.b] is not None and replicated_cache.key_cache[model_obj.b].ndim >= 3:
-                            k_max_len = replicated_cache.key_cache[model_obj.b].shape[2]
-                        else:
-                            k_max_len = model_obj.k_passages * model_obj.max_passage_len
-                            
-                        query_len = replicated_full_ids.shape[1]
-                        position_ids = torch.arange(k_max_len, k_max_len + query_len, device=self.device)
-                        position_ids = position_ids.unsqueeze(0).repeat(batch_size * batch_size, 1)
-                        
-                        # Sub-chunk the self-distillation forward pass (max 4 sequences per pass) under torch.no_grad() to prevent autograd graph buildup and NVML VRAM allocation peaks
-                        loss_per_seq_list = []
-                        sub_chunk_size = 4
-                        num_replicated = batch_size * batch_size
-                        loss_fct = nn.CrossEntropyLoss(reduction="none")
-                        
-                        with torch.no_grad():
-                            for start_i in range(0, num_replicated, sub_chunk_size):
-                                end_i = min(start_i + sub_chunk_size, num_replicated)
-                                sub_full_ids = replicated_full_ids[start_i:end_i]
-                                sub_labels = replicated_labels[start_i:end_i]
-                                sub_pos_ids = position_ids[start_i:end_i]
-                                
-                                sub_cache = DynamicCache()
-                                for l in range(num_layers):
-                                    if model_obj.b <= l <= model_obj.t:
-                                        k_l, v_l = extract_kv_for_layer(replicated_cache, l)
-                                        safe_update_dynamic_cache(sub_cache, k_l[start_i:end_i], v_l[start_i:end_i], l)
-                                        
-                                outputs_rep = model_obj.base_model(
-                                    input_ids=sub_full_ids,
-                                    past_key_values=sub_cache,
-                                    position_ids=sub_pos_ids,
-                                    attention_mask=None
-                                )
-                                
-                                logits_rep = outputs_rep.logits
-                                shift_logits = logits_rep[..., :-1, :].contiguous()
-                                shift_labels = sub_labels[..., 1:].contiguous()
-                                
-                                sub_loss_per_tok = loss_fct(shift_logits.view(-1, shift_logits.size(-1)), shift_labels.view(-1))
-                                sub_loss_per_tok = sub_loss_per_tok.view(end_i - start_i, -1)
-                                
-                                sub_mask = (shift_labels != -100).float()
-                                sub_loss_per_seq = (sub_loss_per_tok * sub_mask).sum(dim=-1)
-                                loss_per_seq_list.append(sub_loss_per_seq)
-                            
-                        loss_per_seq = torch.cat(loss_per_seq_list, dim=0)
-                        log_probs_lm = -loss_per_seq.view(batch_size, batch_size).transpose(0, 1)
+                    ret_loss = self.distill_loss_fn(scores_subset, log_probs_lm)
                     
-                    ret_loss = self.distill_loss_fn(scores_local, log_probs_lm)
-                    
-                # 3. Main Generator Forward Pass (Query token loss)
-                topk_passage_ids = candidate_passage_ids[:batch_size]
-                topk_cache = model_obj.encode_passages(topk_passage_ids, k_passages=1)
-                
-                outputs = model_obj(
-                    query_ids=full_ids,
-                    custom_past_key_values=topk_cache,
-                    labels=labels,
-                    attention_mask=full_attention_mask
+                # 3. Joint Generator Forward Pass (Section 3.2 Eq 2)
+                top_pos_cache = model_obj.encode_passages(
+                    primary_pos_ids, 
+                    attention_mask=primary_pos_mask,
+                    k_passages=1,
+                    encoding_mode="concatenated"
                 )
                 
-                gen_loss = outputs.loss
+                gen_outputs = model_obj(
+                    query_ids=full_ids,
+                    custom_past_key_values=top_pos_cache,
+                    labels=labels,
+                    attention_mask=full_mask
+                )
+                
+                gen_loss = gen_outputs.loss
                 loss = gen_loss + self.lambda_ret * ret_loss
                 
                 if self.accumulation_steps > 1:
                     loss = loss / self.accumulation_steps
-
+                    
             if torch.isnan(loss) or torch.isinf(loss):
                 continue
                 
-            if self.use_amp and self.scaler is not None and self.scaler.is_enabled():
-                self.scaler.scale(loss).backward()
-            else:
-                loss.backward()
-                
+            loss.backward()
+            
             if (batch_idx + 1) % self.accumulation_steps == 0 or (batch_idx + 1) == len(dataloader):
-                if self.use_amp and self.scaler is not None and self.scaler.is_enabled():
-                    self.scaler.unscale_(self.optimizer)
-                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
-                    self.scaler.step(self.optimizer)
-                    self.scaler.update()
-                else:
-                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
-                    self.optimizer.step()
-                    
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
+                self.optimizer.step()
                 self.optimizer.zero_grad()
-                
                 if self.scheduler is not None:
                     self.scheduler.step()
                     
@@ -219,91 +195,76 @@ class ImpRAGTrainer:
             
             if batch_idx % 10 == 0 and rank == 0:
                 print(f"Epoch {epoch+1} [{stage_name}] Batch {batch_idx}/{len(dataloader)}: "
-                      f"Loss = {loss.item() * self.accumulation_steps:.4f} (Gen = {gen_loss.item():.4f}, Ret = {ret_loss.item():.4f})")
+                      f"Total = {loss.item() * self.accumulation_steps:.4f} (Gen = {gen_loss.item():.4f}, Ret = {ret_loss.item():.4f})")
                 
         avg_loss = total_loss / max(len(dataloader), 1)
-        avg_gen_loss = total_gen_loss / max(len(dataloader), 1)
-        avg_ret_loss = total_ret_loss / max(len(dataloader), 1)
-        return avg_loss, avg_gen_loss, avg_ret_loss
+        avg_gen = total_gen_loss / max(len(dataloader), 1)
+        avg_ret = total_ret_loss / max(len(dataloader), 1)
+        return avg_loss, avg_gen, avg_ret
 
     def evaluate(self, dataloader, tokenizer, k_top=5):
         """
-        Evaluate the generation exact match (EM) and retrieval recall.
+        Evaluates Exact Match (EM) and Recall@1 / Recall@k matching the evaluation setup in Section 4.1.
         """
         self.model.eval()
         exact_matches = 0
-        total_samples = 0
         retrieval_recalls = 0
+        total_samples = 0
         
-        is_distributed = dist.is_initialized()
-        rank = dist.get_rank() if is_distributed else 0
         model_obj = self.model.module if hasattr(self.model, "module") else self.model
         
         with torch.no_grad():
             for batch in dataloader:
                 query_ids = batch["query_ids"].to(self.device)
-                candidate_passage_ids = batch["candidate_passage_ids"].to(self.device)
+                cand_ids = batch["candidate_passage_ids"].to(self.device)
                 positive_mask = batch["positive_mask"].to(self.device)
+                labels = batch["labels"].to(self.device)
                 
                 batch_size = query_ids.shape[0]
-                num_candidates = candidate_passage_ids.shape[0] // batch_size
+                query_mask = batch["query_attention_mask"].to(self.device)
+                cand_mask = batch["candidate_passage_attention_mask"].to(self.device)
                 
-                query_attention_mask = batch["query_attention_mask"].to(self.device)
-                candidate_passage_attention_mask = batch["candidate_passage_attention_mask"].to(self.device)
-                
-                E_q = model_obj.get_retriever_embeddings(query_ids, attention_mask=query_attention_mask, is_query=True)
-                E_p = model_obj.get_retriever_embeddings(candidate_passage_ids, attention_mask=candidate_passage_attention_mask, is_query=False)
+                E_q = model_obj.get_retriever_embeddings(query_ids, attention_mask=query_mask, is_query=True)
+                E_p = model_obj.get_retriever_embeddings(cand_ids, attention_mask=cand_mask, is_query=False)
                 
                 E_q_norm = F.normalize(E_q, p=2, dim=-1)
                 E_p_norm = F.normalize(E_p, p=2, dim=-1)
                 
-                dim = E_q.shape[-1]
-                E_p_reshaped = E_p_norm.view(batch_size, num_candidates, dim)
-                scores = torch.bmm(E_q_norm.unsqueeze(1), E_p_reshaped.transpose(1, 2)).squeeze(1)
+                scores = torch.matmul(E_q_norm, E_p_norm.transpose(0, 1))  # [batch_size, num_cands]
                 
-                _, topk_indices = torch.topk(scores, k=1, dim=-1)
+                _, topk_indices = torch.topk(scores, k=min(k_top, scores.shape[1]), dim=-1)
                 
+                # Check Recall@k
                 for i in range(batch_size):
-                    ret_idx = topk_indices[i, 0].item()
-                    if positive_mask.shape[1] == batch_size:
-                        if ret_idx == i:
-                            retrieval_recalls += 1
-                    else:
-                        if positive_mask[i, ret_idx].item() is True:
-                            retrieval_recalls += 1
-                            
-                k_passages = min(model_obj.k_passages, num_candidates)
-                _, topk_indices_gen = torch.topk(scores, k=k_passages, dim=-1)
-                
-                selected_passages_list = []
+                    top_candidates = topk_indices[i].tolist()
+                    is_recalled = any(positive_mask[i, c_idx].item() for c_idx in top_candidates if c_idx < positive_mask.shape[1])
+                    if is_recalled:
+                        retrieval_recalls += 1
+                        
+                # Perform Generation with Top-k Retrieved Passages
                 for i in range(batch_size):
-                    item_candidates = candidate_passage_ids[i * num_candidates : (i + 1) * num_candidates]
-                    selected_passages = item_candidates[topk_indices_gen[i]]
-                    selected_passages_list.append(selected_passages)
+                    top_k_indices_i = topk_indices[i][:k_top]
+                    selected_cand_ids = cand_ids[top_k_indices_i].unsqueeze(0)  # [1, k, seq_len]
                     
-                selected_passage_ids = torch.cat(selected_passages_list, dim=0)
-                
-                orig_k = model_obj.k_passages
-                model_obj.k_passages = k_passages
-                try:
-                    topk_cache = model_obj.encode_passages(selected_passage_ids)
-                    generated_tokens = model_obj.generate(
-                        query_ids=query_ids,
-                        custom_past_key_values=topk_cache,
+                    custom_cache = model_obj.encode_passages(
+                        selected_cand_ids, 
+                        k_passages=len(top_k_indices_i),
+                        encoding_mode="concatenated"
+                    )
+                    
+                    gen_tokens = model_obj.generate(
+                        query_ids=query_ids[i:i+1],
+                        custom_past_key_values=custom_cache,
                         max_new_tokens=15
                     )
-                finally:
-                    model_obj.k_passages = orig_k
-                
-                gen_texts = tokenizer.batch_decode(generated_tokens, skip_special_tokens=True)
-                labels = batch["labels"].to(self.device)
-                
-                for i in range(batch_size):
-                    ans_tokens = labels[i][labels[i] != -100]
-                    ans_text = tokenizer.decode(ans_tokens, skip_special_tokens=True).strip()
-                    gen_text = gen_texts[i].strip()
                     
-                    if gen_text.lower() == ans_text.lower() or ans_text.lower() in gen_text.lower():
+                    gen_text = tokenizer.decode(gen_tokens[0], skip_special_tokens=True).strip().lower()
+                    
+                    # Extract ground-truth answer
+                    ans_tokens = labels[i][labels[i] != -100]
+                    ans_text = tokenizer.decode(ans_tokens, skip_special_tokens=True).strip().lower()
+                    
+                    if ans_text in gen_text or gen_text == ans_text:
                         exact_matches += 1
                         
                     total_samples += 1

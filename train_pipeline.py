@@ -133,22 +133,22 @@ def main():
         low_cpu_mem_usage=True
     )
     
-    # 3. Slice and wrap the model dynamically based on number of layers
+    # 3. Slice and wrap the model dynamically based on number of layers (Section 4.1 in paper)
     num_layers = base_model.config.num_hidden_layers
     if num_layers == 32:
-        b = 15
+        b = 7
         t = 23
     elif num_layers == 28:
-        b = 14
+        b = 7
         t = 19
     else:
-        b = int(num_layers * 0.5)
-        t = int(num_layers * 0.7)
+        b = 7
+        t = int(num_layers * 0.75)
         if local_rank == 0:
-            print(f"Warning: Unexpected layer count {num_layers}. Falling back to proportional slicing: b={b}, t={t}")
+            print(f"Warning: Unexpected layer count {num_layers}. Slicing: b={b}, t={t}")
         
     if local_rank == 0:
-        print(f"Model Slicing Boundaries: bottom layer group LB (0..{b}), middle group LM ({b}..{t}), top group LT ({t}..{num_layers-1})")
+        print(f"Model Slicing Boundaries: bottom layer group LB (0..{b}), middle group LM ({b}..{t}), top group LT ({t+1}..{num_layers-1})")
     
     model = ImpRAGModel(base_model, b=b, t=t, k_passages=5, max_passage_len=128, pooling_type=args.pooling_type)
     model.to(device)
@@ -167,7 +167,7 @@ def main():
         sampler=train_sampler,
         num_workers=args.num_workers if device != "cpu" else 0,
         pin_memory=True if device != "cpu" else False,
-        collate_fn=lambda b: collate_fn(b, tokenizer, max_query_len=64, max_passage_len=128, num_candidates=5)
+        collate_fn=lambda b: collate_fn(b, tokenizer, max_query_len=64, max_passage_len=128, max_positives_per_query=5, max_negatives_per_query=5)
     )
     eval_loader = DataLoader(
         eval_dataset,
@@ -176,7 +176,7 @@ def main():
         sampler=eval_sampler,
         num_workers=args.num_workers if device != "cpu" else 0,
         pin_memory=True if device != "cpu" else False,
-        collate_fn=lambda b: collate_fn(b, tokenizer, max_query_len=64, max_passage_len=128, num_candidates=5)
+        collate_fn=lambda b: collate_fn(b, tokenizer, max_query_len=64, max_passage_len=128, max_positives_per_query=5, max_negatives_per_query=5)
     )
     
     # 5. Initialize Optimizer, Scheduler and Trainer
@@ -337,8 +337,8 @@ def main():
                 if has_answer:
                     retrieval_recalls += 1
                     
-                retrieved_passage_ids = tokenizer(ret_passages[:5], padding=True, truncation=True, max_length=128, return_tensors="pt").input_ids.to(device)
-                custom_cache = model_obj.encode_passages(retrieved_passage_ids)
+                retrieved_passage_ids = tokenizer(ret_passages[:5], padding=True, truncation=True, max_length=128, return_tensors="pt").input_ids.to(device).unsqueeze(0)
+                custom_cache = model_obj.encode_passages(retrieved_passage_ids, k_passages=len(ret_passages[:5]), encoding_mode="concatenated")
                 
                 gen_tokens = model_obj.generate(q_ids, custom_cache, max_new_tokens=15)
                 gen_text = tokenizer.decode(gen_tokens[0], skip_special_tokens=True).strip().lower()

@@ -13,8 +13,20 @@ dist/
 build/
 *.egg-info/
 
-# Large model checkpoints (do not push to GitHub)
+# Large model checkpoints & indices (exceeds GitHub 100MB limit)
 imp_rag_checkpoint/
+*.index
+*.npy
+*.pt
+*.bin
+*.safetensors
+
+# Large datasets & corpora
+train_dataset_with_pseudo_labels.json
+wiki_passages.json
+
+# Gradio cache & local artifacts
+.gradio/
 
 # OS files
 .DS_Store
