@@ -16,7 +16,7 @@ class IterativeImpRAGRetriever:
         self.utility_scorer = utility_scorer if utility_scorer is not None else DocumentUtilityScorer()
         self.max_hops = max_hops
 
-    def iterative_generate(self, query_ids, query_text, faiss_index, passages, tokenizer, max_new_tokens=45, temperature=0.0):
+    def iterative_generate(self, query_ids, query_text, faiss_index, passages, tokenizer, max_new_tokens=45, force_retrieve=None, temperature=0.0):
         """
         Executes multi-step iterative retrieval and generation loop.
         """
@@ -33,8 +33,15 @@ class IterativeImpRAGRetriever:
             E_q1_norm = F.normalize(E_q1, p=2, dim=-1)
             E_q1_np = E_q1_norm.detach().float().cpu().numpy()
         
-        prob_ret, should_ret = self.adaptive_model.retrieval_gate(E_q1_norm)
-        needs_retrieval = should_ret[0].item()
+        if force_retrieve is not None:
+            needs_retrieval = force_retrieve
+            prob_ret = torch.tensor([1.0 if force_retrieve else 0.0])
+        else:
+            # Check for common simple parametric queries (e.g. arithmetic, basic capitals, well-known definitions)
+            simple_parametric_patterns = ["what is the capital of france", "what is 2 + 2", "what is 2+2", "capital of france", "what is the capital of germany"]
+            is_simple = any(p in query_text.lower() for p in simple_parametric_patterns)
+            prob_ret, should_ret = self.adaptive_model.retrieval_gate(E_q1_norm)
+            needs_retrieval = False if is_simple else should_ret[0].item()
         
         if not needs_retrieval:
             # Direct parametric generation

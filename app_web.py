@@ -100,27 +100,16 @@ def qa_interface(query, mode, force_retrieve_opt, temperature=0.0):
             elif force_retrieve_opt == "Force Parametric (Bypass)":
                 force_ret = False
                 
-            if force_ret is False:
-                gen_text, telem = adaptive_model.adaptive_generate(
-                    query_ids=q_ids,
-                    query_text=formatted_query,
-                    faiss_index=faiss_index,
-                    passages=passages,
-                    tokenizer=tokenizer,
-                    max_new_tokens=40,
-                    force_retrieve=False,
-                    temperature=temperature
-                )
-            else:
-                gen_text, telem = iterative_retriever.iterative_generate(
-                    query_ids=q_ids,
-                    query_text=formatted_query,
-                    faiss_index=faiss_index,
-                    passages=passages,
-                    tokenizer=tokenizer,
-                    max_new_tokens=45,
-                    temperature=temperature
-                )
+            gen_text, telem = iterative_retriever.iterative_generate(
+                query_ids=q_ids,
+                query_text=formatted_query,
+                faiss_index=faiss_index,
+                passages=passages,
+                tokenizer=tokenizer,
+                max_new_tokens=45,
+                force_retrieve=force_ret,
+                temperature=temperature
+            )
             
             is_retrieved = telem.get("retrieval_decision") == "RETRIEVED"
             decision_badge = "🟢 RETRIEVAL TRIGGERED" if is_retrieved else "⚡ PARAMETRIC BYPASS (No Search)"
