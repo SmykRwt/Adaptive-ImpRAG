@@ -132,15 +132,15 @@ def qa_interface(query, mode, force_retrieve_opt, temperature=0.0):
                       f"- **Decoding Mode**: `{'Deterministic Greedy (0.0)' if temperature == 0.0 else f'Stochastic (T={temperature})'}`\n" \
                       f"- **Retrieval Decision**: **{decision_badge}**\n" \
                       f"- **Multi-Hop Traversal**: **{hops} Sequential Retrieval Passes**\n" \
-                      f"- **Passage Budget Allocated ($k$)**: `{k_alloc}` passages\n" \
-                      f"- **Dynamic Layer Allocation ($b \\dots t$)**: `{b_bounds}`\n" \
+                      f"- **Passage Budget Allocated (k)**: `{k_alloc}` passages\n" \
+                      f"- **Dynamic Layer Allocation (b ... t)**: `{b_bounds}`\n" \
                       f"- **Context Utility & Sufficiency**: Verified by Utility Scorer\n" \
                       f"- **Compute Saved / Efficiency**: **{comp_saved}**\n"
                       
             if telem.get("hop_details"):
                 diag_md += "\n**Iterative Hop Details**:\n"
                 for h in telem["hop_details"]:
-                    diag_md += f"- *Hop {h['hop']}*: Evaluated {h['candidates_found']} $\\to$ Retained {h['passages_retained']} (Coverage: `{h['coverage_ratio']:.1%}`)\n"
+                    diag_md += f"- *Hop {h['hop']}*: Evaluated {h['candidates_found']} → Retained {h['passages_retained']} (Coverage: `{h['coverage_ratio']:.1%}`)\n"
                     
             if telem.get("retrieved_passages"):
                 context_md = f"### 📚 Retrieved & Utility-Filtered Passages (k={len(telem['retrieved_passages'])}):\n\n"
@@ -186,9 +186,9 @@ def qa_interface(query, mode, force_retrieve_opt, temperature=0.0):
                 
                 diag_md = f"### ⚙️ Baseline ImpRAG Telemetry (Original Paper)\n" \
                           f"- **Decoding Mode**: `{'Deterministic Greedy (0.0)' if temperature == 0.0 else f'Stochastic (T={temperature})'}`\n" \
-                          f"- **Retrieval Policy**: **Static (Always Retrieve $k=5$)**\n" \
-                          f"- **Passage Budget Allocated ($k$)**: `5` passages (Fixed)\n" \
-                          f"- **Layer Slicing**: Fixed $[b=7, t=23]$ (Bottom $0..7$, Middle $7..23$, Top $24..31$)\n" \
+                          f"- **Retrieval Policy**: **Static (Always Retrieve k=5)**\n" \
+                          f"- **Passage Budget Allocated (k)**: `5` passages (Fixed)\n" \
+                          f"- **Layer Slicing**: Fixed [b=7, t=23] (Bottom 0..7, Middle 7..23, Top 24..31)\n" \
                           f"- **GQA Head Pooling**: Static Uniform Mean\n" \
                           f"- **Compute Savings**: **0.0% (Full KV Cache Overhead Incurred)**\n"
                 return gen_text, diag_md
@@ -256,9 +256,9 @@ with gr.Blocks(title="Adaptive ImpRAG Interactive System") as demo:
             | Dimension | Baseline ImpRAG (Original Paper) | Adaptive ImpRAG (Our Architecture) | Advantage / Impact |
             |---|---|---|---|
             | **1. Retrieval Trigger** | Static (Always retrieves for every query) | **Dynamic Decision Gate** (Parametric vs. Non-Parametric) | **~85% compute saved** on parametric queries |
-            | **2. Passage Budget ($k$)** | Fixed $k=5$ passages | **Entropy & Margin-Aware $k \in \{1, 2, 5, 10\}$** | **30–60% KV cache savings** per query |
-            | **3. Layer Depth $[b, t]$** | Rigid $b=7, t=23$ | **Dynamic Router** (Shallow $b=4, t=14$, Standard $b=7, t=20$, Deep $b=7, t=26$) | Tailored reasoning depth per query complexity |
-            | **4. Attention Head Pooling** | Uniform simple mean over GQA heads | **Query-Conditioned Learned Head Weighting $\\alpha_h(q)$** | Higher retrieval precision & MRR |
+            | **2. Passage Budget (k)** | Fixed k = 5 passages | **Entropy & Margin-Aware (k in {1, 2, 5, 10})** | **30–60% KV cache savings** per query |
+            | **3. Layer Depth [b, t]** | Rigid b=7, t=23 | **Dynamic Router** (Shallow b=4, t=14; Standard b=7, t=20; Deep b=7, t=26) | Tailored reasoning depth per query complexity |
+            | **4. Attention Head Pooling** | Uniform simple mean over GQA heads | **Query-Conditioned Learned Head Weighting α_h(q)** | Higher retrieval precision & MRR |
             | **5. Multi-Hop Reasoning** | Single-hop fixed retrieval | **Iterative Multi-Hop Refinement + Document Utility Scorer** | Filters noise/redundancy & resolves complex multi-step queries |
             """
         )
