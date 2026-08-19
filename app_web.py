@@ -198,6 +198,16 @@ def qa_interface(query, mode, force_retrieve_opt, temperature=0.0):
         traceback.print_exc()
         return f"Error: {str(e)}", ""
 
+def get_temperature_guide(temp):
+    if temp == 0.0:
+        return "🎯 **T = 0.0 (Deterministic Greedy):** Best for **factual QA, benchmark evaluation, and zero hallucination**."
+    elif temp <= 0.3:
+        return f"📘 **T = {temp:.2f} (Low Stochastic):** Best for **technical lookup & precise answers** with slight vocabulary variation."
+    elif temp <= 0.7:
+        return f"💡 **T = {temp:.2f} (Balanced Sampling):** Best for **natural explanations, conversational synthesis, & summaries**."
+    else:
+        return f"🎨 **T = {temp:.2f} (High Creativity):** Best for **brainstorming & open-ended writing** (higher hallucination risk)."
+
 with gr.Blocks(title="Adaptive ImpRAG Interactive System") as demo:
     gr.Markdown(
         """
@@ -231,17 +241,20 @@ with gr.Blocks(title="Adaptive ImpRAG Interactive System") as demo:
                     label="Retrieval Trigger Policy"
                 )
             with gr.Row():
-                temp_slider = gr.Slider(
-                    minimum=0.0,
-                    maximum=1.0,
-                    value=0.0,
-                    step=0.05,
-                    label="Sampling Temperature (0.0 = Deterministic Greedy)"
-                )
+                with gr.Column():
+                    temp_slider = gr.Slider(
+                        minimum=0.0,
+                        maximum=1.0,
+                        value=0.0,
+                        step=0.05,
+                        label="Sampling Temperature",
+                        info="Controls generation randomness across both Adaptive and Baseline modes"
+                    )
+                    temp_guide = gr.Markdown(value=get_temperature_guide(0.0))
                 
             submit_btn = gr.Button("Execute Query", variant="primary")
             answer_output = gr.Textbox(
-                label="Generated Response (Deterministic):", 
+                label="Generated Response:", 
                 placeholder="Generated answer will appear here...",
                 interactive=False,
                 lines=3
@@ -263,6 +276,11 @@ with gr.Blocks(title="Adaptive ImpRAG Interactive System") as demo:
             """
         )
             
+    temp_slider.change(
+        fn=get_temperature_guide,
+        inputs=[temp_slider],
+        outputs=[temp_guide]
+    )
     submit_btn.click(
         fn=qa_interface,
         inputs=[query_input, mode_selector, force_opt, temp_slider],
