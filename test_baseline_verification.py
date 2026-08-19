@@ -22,7 +22,7 @@ def run_tests():
     
     # 1. Test Model Architecture & Layer Slicing
     print('[Test 1] Testing Model Initialization & Layer Slicing...')
-    config = GPT2Config(n_layer=4, n_embd=128, n_head=4, vocab_size=len(tokenizer))
+    config = GPT2Config(n_layer=4, n_embd=128, n_head=4, vocab_size=len(tokenizer), _attn_implementation='eager')
     base_model = GPT2LMHeadModel(config).to(device)
     
     model = ImpRAGModel(base_model, b=1, t=2, k_passages=2, max_passage_len=16, pooling_type='last_token')

@@ -24,7 +24,7 @@ def test_capstone_modules():
     
     # 1. Test PEFT / LoRA (Section 6.5 & Objective 4)
     print('[Test 1] Testing Parameter-Efficient Fine-Tuning (LoRA)...')
-    config = GPT2Config(n_layer=4, n_embd=128, n_head=4, vocab_size=128256)
+    config = GPT2Config(n_layer=4, n_embd=128, n_head=4, vocab_size=128256, _attn_implementation='eager')
     dummy_model = GPT2LMHeadModel(config).to(device)
     adapters = apply_lora_to_imprag(dummy_model, r=8, lora_alpha=16, target_modules=['c_attn'], max_layer=2)
     assert len(adapters) > 0, 'LoRA adapters should be attached'

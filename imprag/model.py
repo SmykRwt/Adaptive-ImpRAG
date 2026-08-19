@@ -94,6 +94,8 @@ class ImpRAGModel(nn.Module):
             
         # Detect model architecture type and locate projection modules at layer b
         self.model_type, self.q_module, self.k_module = self._find_projection_modules(self.b)
+        if self.model_type == "gpt2" and hasattr(self.base_model, "config"):
+            self.base_model.config._attn_implementation = "eager"
         
         # Activations captured during forward pass
         self.captured_q = None
@@ -348,17 +350,12 @@ class ImpRAGModel(nn.Module):
                     
         position_ids = torch.arange(k_max_len, k_max_len + query_len, device=query_ids.device).unsqueeze(0).repeat(batch_size, 1)
         
-        if attention_mask is None and k_max_len > 0:
-            attn_mask = torch.ones((batch_size, k_max_len + query_len), device=query_ids.device, dtype=torch.long)
-        else:
-            attn_mask = attention_mask
-            
         return self.base_model(
             input_ids=query_ids,
             past_key_values=custom_past_key_values,
             position_ids=position_ids,
             labels=labels,
-            attention_mask=attn_mask
+            attention_mask=attention_mask if custom_past_key_values is None else None
         )
 
     def generate(self, query_ids, custom_past_key_values=None, max_new_tokens=30, temperature=0.0, eos_token_ids=None):
@@ -385,13 +382,11 @@ class ImpRAGModel(nn.Module):
                         
             position_ids = torch.arange(k_max_len, k_max_len + query_len, device=query_ids.device).unsqueeze(0).repeat(batch_size, 1)
             
-            attn_mask = torch.ones((batch_size, k_max_len + query_len), device=query_ids.device, dtype=torch.long) if k_max_len > 0 else None
-            
             outputs = self.base_model(
                 input_ids=query_ids,
                 past_key_values=custom_past_key_values,
                 position_ids=position_ids,
-                attention_mask=attn_mask
+                attention_mask=None
             )
             
             next_token_logits = outputs.logits[:, -1, :]

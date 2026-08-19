@@ -74,7 +74,7 @@ def run_adaptive_tests():
     
     # 5. Test Full AdaptiveImpRAGModel Inference Pipeline
     print('[End-to-End Test] Testing Full Adaptive ImpRAG Pipeline on Toy Corpus...')
-    config = GPT2Config(n_layer=4, n_embd=128, n_head=4, vocab_size=len(tokenizer))
+    config = GPT2Config(n_layer=4, n_embd=128, n_head=4, vocab_size=len(tokenizer), _attn_implementation='eager')
     base_model = GPT2LMHeadModel(config).to(device)
     
     adaptive_model = AdaptiveImpRAGModel(base_model, default_b=1, default_t=2).to(device)
