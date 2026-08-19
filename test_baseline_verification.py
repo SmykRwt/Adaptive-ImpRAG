@@ -1,5 +1,11 @@
+import os
+import sys
 import torch
 import torch.nn as nn
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+if BASE_DIR not in sys.path:
+    sys.path.insert(0, BASE_DIR)
 from transformers import AutoTokenizer, GPT2LMHeadModel, GPT2Config
 from imprag.model import ImpRAGModel
 from imprag.loss import MultiLabelNCELoss, SelfDistillationLoss, compute_generation_loss

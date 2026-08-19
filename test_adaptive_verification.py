@@ -1,5 +1,12 @@
+import os
+import sys
 import torch
 import numpy as np
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+if BASE_DIR not in sys.path:
+    sys.path.insert(0, BASE_DIR)
+
 from transformers import AutoTokenizer, GPT2LMHeadModel, GPT2Config
 from imprag.retriever import ImpRAGFAISSIndex
 from imprag.adaptive import AdaptiveImpRAGModel, AdaptiveGQAPooling, DynamicRetrievalGate, AdaptiveKAllocator, AdaptiveLayerBoundaryRouter
@@ -10,11 +17,11 @@ def run_adaptive_tests():
     print('=' * 60)
     
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
-    import os
-    if os.path.exists('imp_rag_checkpoint'):
-        tokenizer = AutoTokenizer.from_pretrained('imp_rag_checkpoint', local_files_only=True)
+    ckpt_dir = os.path.join(BASE_DIR, "imp_rag_checkpoint")
+    if os.path.exists(ckpt_dir):
+        tokenizer = AutoTokenizer.from_pretrained(ckpt_dir, local_files_only=True)
     else:
-        tokenizer = AutoTokenizer.from_pretrained('gpt2', local_files_only=True)
+        tokenizer = AutoTokenizer.from_pretrained('gpt2')
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
     

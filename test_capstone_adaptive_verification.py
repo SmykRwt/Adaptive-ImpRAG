@@ -1,4 +1,11 @@
+import os
+import sys
 import torch
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+if BASE_DIR not in sys.path:
+    sys.path.insert(0, BASE_DIR)
+
 from imprag.peft_lora import LoRALinear, apply_lora_to_imprag
 from imprag.utility import DocumentUtilityScorer
 from imprag.iterative import IterativeImpRAGRetriever
@@ -64,7 +71,11 @@ def test_capstone_modules():
     
     # 5. Test Iterative Multi-Hop Retrieval (Section 6.3 & Objective 3)
     print('[Test 5] Testing Iterative Multi-Hop Retrieval Mechanism...')
-    tokenizer = AutoTokenizer.from_pretrained('imp_rag_checkpoint', local_files_only=True)
+    ckpt_dir = os.path.join(BASE_DIR, "imp_rag_checkpoint")
+    if os.path.exists(ckpt_dir):
+        tokenizer = AutoTokenizer.from_pretrained(ckpt_dir, local_files_only=True)
+    else:
+        tokenizer = AutoTokenizer.from_pretrained("gpt2")
     if tokenizer.pad_token is None: tokenizer.pad_token = tokenizer.eos_token
     
     adaptive_model = AdaptiveImpRAGModel(dummy_model, default_b=1, default_t=2).to(device)
