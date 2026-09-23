@@ -100,48 +100,54 @@ def qa_interface(query, mode, force_retrieve_opt, temperature=0.0):
             elif force_retrieve_opt == "Force Parametric (Bypass)":
                 force_ret = False
                 
-            gen_text, telem = iterative_retriever.iterative_generate(
-                query_ids=q_ids,
-                query_text=formatted_query,
-                faiss_index=faiss_index,
-                passages=passages,
-                tokenizer=tokenizer,
-                max_new_tokens=45,
-                force_retrieve=force_ret,
-                temperature=temperature
-            )
-            
-            is_retrieved = telem.get("retrieval_decision") == "RETRIEVED"
-            decision_badge = "🟢 RETRIEVAL TRIGGERED" if is_retrieved else "⚡ PARAMETRIC BYPASS (No Search)"
-            hops = telem.get("total_hops", 1 if is_retrieved else 0)
-            raw_bounds = telem.get("layer_boundaries")
-            if isinstance(raw_bounds, dict):
-                b_bounds = f"{raw_bounds.get('tier_name', 'Standard')} → [b={raw_bounds.get('b', 7)}, t={raw_bounds.get('t', 20)}]"
+            if force_ret is False:
+                gen_text, telem = adaptive_model.adaptive_generate(
+                    query_ids=q_ids,
+                    query_text=formatted_query,
+                    faiss_index=faiss_index,
+                    passages=passages,
+                    tokenizer=tokenizer,
+                    max_new_tokens=40,
+                    force_retrieve=False,
+                    temperature=temperature
+                )
             else:
-                b_bounds = "N/A (Direct Internal Memory)"
-                
+                gen_text, telem = iterative_retriever.iterative_generate(
+                    query_ids=q_ids,
+                    query_text=formatted_query,
+                    faiss_index=faiss_index,
+                    passages=passages,
+                    tokenizer=tokenizer,
+                    max_new_tokens=45,
+                    temperature=temperature
+                )
+            
+            decision_badge = "🟢 RETRIEVAL TRIGGERED" if telem.get("retrieval_decision") == "RETRIEVED" else "⚡ PARAMETRIC BYPASS (No Search)"
+            hops = telem.get("total_hops", 1)
+            b_bounds = telem.get("layer_boundaries", "N/A")
             k_alloc = telem.get("k_allocated", len(telem.get("retrieved_passages", [])))
-            if not is_retrieved or k_alloc == 0:
-                comp_saved = "~85% (FAISS Search & Passage KV Encoding Bypassed)"
-            else:
-                saved_pct = max(0.0, (5 - k_alloc) / 5.0 * 100)
-                comp_saved = f"{saved_pct:.1f}% KV Cache Memory Saved vs. Static k=5"
-            
-            decoding_mode = 'Deterministic Greedy (0.0)' if temperature == 0.0 else f'Stochastic (T={temperature})'
+            comp_saved = telem.get("compute_saved", f"Dynamic k={k_alloc} vs static k=5")
             
             diag_md = f"### 🧠 Adaptive ImpRAG Telemetry (Capstone Architecture)\n" \
-                      f"- **Decoding Mode**: `{decoding_mode}`\n" \
+                      f"- **Decoding Mode**: `{'Deterministic Greedy (0.0)' if temperature == 0.0 else f'Stochastic (T={temperature})'}`\n" \
                       f"- **Retrieval Decision**: **{decision_badge}**\n" \
-                      f"- **Passage Budget Allocated (k)**: `{k_alloc}` passages\n" \
-                      f"- **Dynamic Layer Depth [b ... t]**: `{b_bounds}`\n" \
-                      f"- **Multi-Hop Traversal**: `{hops}` Sequential Retrieval Passes\n" \
-                      f"- **Context Utility & Redundancy**: `Verified by Utility Scorer`\n" \
-                      f"- **Compute Saved / Efficiency**: **`{comp_saved}`**\n"
+                      f"- **Multi-Hop Traversal**: **{hops} Sequential Retrieval Passes**\n" \
+                      f"- **Passage Budget Allocated ($k$)**: `{k_alloc}` passages\n" \
+                      f"- **Dynamic Layer Allocation ($b \\dots t$)**: `{b_bounds}`\n" \
+                      f"- **Context Utility & Sufficiency**: Verified by Utility Scorer\n" \
+                      f"- **Compute Saved / Efficiency**: **{comp_saved}**\n"
                       
             if telem.get("hop_details"):
                 diag_md += "\n**Iterative Hop Details**:\n"
                 for h in telem["hop_details"]:
-                    diag_md += f"- *Hop {h['hop']}*: Evaluated {h['candidates_found']} → Retained {h['passages_retained']} (Coverage: `{h['coverage_ratio']:.1%}`)\n"
+                    diag_md += f"- *Hop {h['hop']}*: Evaluated {h['candidates_found']} $\\to$ Retained {h['passages_retained']} (Coverage: `{h['coverage_ratio']:.1%}`)\n"
+                    
+            if telem.get("retrieved_passages"):
+                context_md = f"### 📚 Retrieved & Utility-Filtered Passages (k={len(telem['retrieved_passages'])}):\n\n"
+                for rank, text in enumerate(telem["retrieved_passages"], 1):
+                    context_md += f"**Passage {rank}**\n> {text}\n\n"
+            else:
+                context_md = "*No external retrieval needed. Model answered purely from internal parametric knowledge.*"
                 
             return gen_text, diag_md
             
@@ -180,9 +186,9 @@ def qa_interface(query, mode, force_retrieve_opt, temperature=0.0):
                 
                 diag_md = f"### ⚙️ Baseline ImpRAG Telemetry (Original Paper)\n" \
                           f"- **Decoding Mode**: `{'Deterministic Greedy (0.0)' if temperature == 0.0 else f'Stochastic (T={temperature})'}`\n" \
-                          f"- **Retrieval Policy**: **Static (Always Retrieve k=5)**\n" \
-                          f"- **Passage Budget Allocated (k)**: `5` passages (Fixed)\n" \
-                          f"- **Layer Slicing**: Fixed [b=7, t=23] (Bottom 0..7, Middle 7..23, Top 24..31)\n" \
+                          f"- **Retrieval Policy**: **Static (Always Retrieve $k=5$)**\n" \
+                          f"- **Passage Budget Allocated ($k$)**: `5` passages (Fixed)\n" \
+                          f"- **Layer Slicing**: Fixed $[b=7, t=23]$ (Bottom $0..7$, Middle $7..23$, Top $24..31$)\n" \
                           f"- **GQA Head Pooling**: Static Uniform Mean\n" \
                           f"- **Compute Savings**: **0.0% (Full KV Cache Overhead Incurred)**\n"
                 return gen_text, diag_md
@@ -191,16 +197,6 @@ def qa_interface(query, mode, force_retrieve_opt, temperature=0.0):
         import traceback
         traceback.print_exc()
         return f"Error: {str(e)}", ""
-
-def get_temperature_guide(temp):
-    if temp == 0.0:
-        return "🎯 **T = 0.0 (Deterministic Greedy):** Best for **factual QA, benchmark evaluation, and zero hallucination**."
-    elif temp <= 0.3:
-        return f"📘 **T = {temp:.2f} (Low Stochastic):** Best for **technical lookup & precise answers** with slight vocabulary variation."
-    elif temp <= 0.7:
-        return f"💡 **T = {temp:.2f} (Balanced Sampling):** Best for **natural explanations, conversational synthesis, & summaries**."
-    else:
-        return f"🎨 **T = {temp:.2f} (High Creativity):** Best for **brainstorming & open-ended writing** (higher hallucination risk)."
 
 with gr.Blocks(title="Adaptive ImpRAG Interactive System") as demo:
     gr.Markdown(
@@ -235,20 +231,17 @@ with gr.Blocks(title="Adaptive ImpRAG Interactive System") as demo:
                     label="Retrieval Trigger Policy"
                 )
             with gr.Row():
-                with gr.Column():
-                    temp_slider = gr.Slider(
-                        minimum=0.0,
-                        maximum=1.0,
-                        value=0.0,
-                        step=0.05,
-                        label="Sampling Temperature",
-                        info="Controls generation randomness across both Adaptive and Baseline modes"
-                    )
-                    temp_guide = gr.Markdown(value=get_temperature_guide(0.0))
+                temp_slider = gr.Slider(
+                    minimum=0.0,
+                    maximum=1.0,
+                    value=0.0,
+                    step=0.05,
+                    label="Sampling Temperature (0.0 = Deterministic Greedy)"
+                )
                 
             submit_btn = gr.Button("Execute Query", variant="primary")
             answer_output = gr.Textbox(
-                label="Generated Response:", 
+                label="Generated Response (Deterministic):", 
                 placeholder="Generated answer will appear here...",
                 interactive=False,
                 lines=3
@@ -263,18 +256,13 @@ with gr.Blocks(title="Adaptive ImpRAG Interactive System") as demo:
             | Dimension | Baseline ImpRAG (Original Paper) | Adaptive ImpRAG (Our Architecture) | Advantage / Impact |
             |---|---|---|---|
             | **1. Retrieval Trigger** | Static (Always retrieves for every query) | **Dynamic Decision Gate** (Parametric vs. Non-Parametric) | **~85% compute saved** on parametric queries |
-            | **2. Passage Budget (k)** | Fixed k = 5 passages | **Entropy & Margin-Aware (k in {1, 2, 5, 10})** | **30–60% KV cache savings** per query |
-            | **3. Layer Depth [b, t]** | Rigid b=7, t=23 | **Dynamic Router** (Shallow b=4, t=14; Standard b=7, t=20; Deep b=7, t=26) | Tailored reasoning depth per query complexity |
-            | **4. Attention Head Pooling** | Uniform simple mean over GQA heads | **Query-Conditioned Learned Head Weighting α_h(q)** | Higher retrieval precision & MRR |
+            | **2. Passage Budget ($k$)** | Fixed $k=5$ passages | **Entropy & Margin-Aware $k \in \{1, 2, 5, 10\}$** | **30–60% KV cache savings** per query |
+            | **3. Layer Depth $[b, t]$** | Rigid $b=7, t=23$ | **Dynamic Router** (Shallow $b=4, t=14$, Standard $b=7, t=20$, Deep $b=7, t=26$) | Tailored reasoning depth per query complexity |
+            | **4. Attention Head Pooling** | Uniform simple mean over GQA heads | **Query-Conditioned Learned Head Weighting $\\alpha_h(q)$** | Higher retrieval precision & MRR |
             | **5. Multi-Hop Reasoning** | Single-hop fixed retrieval | **Iterative Multi-Hop Refinement + Document Utility Scorer** | Filters noise/redundancy & resolves complex multi-step queries |
             """
         )
             
-    temp_slider.change(
-        fn=get_temperature_guide,
-        inputs=[temp_slider],
-        outputs=[temp_guide]
-    )
     submit_btn.click(
         fn=qa_interface,
         inputs=[query_input, mode_selector, force_opt, temp_slider],

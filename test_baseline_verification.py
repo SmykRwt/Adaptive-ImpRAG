@@ -1,11 +1,5 @@
-import os
-import sys
 import torch
 import torch.nn as nn
-
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-if BASE_DIR not in sys.path:
-    sys.path.insert(0, BASE_DIR)
 from transformers import AutoTokenizer, GPT2LMHeadModel, GPT2Config
 from imprag.model import ImpRAGModel
 from imprag.loss import MultiLabelNCELoss, SelfDistillationLoss, compute_generation_loss
@@ -22,7 +16,7 @@ def run_tests():
     
     # 1. Test Model Architecture & Layer Slicing
     print('[Test 1] Testing Model Initialization & Layer Slicing...')
-    config = GPT2Config(n_layer=4, n_embd=128, n_head=4, vocab_size=len(tokenizer), _attn_implementation='eager')
+    config = GPT2Config(n_layer=4, n_embd=128, n_head=4, vocab_size=len(tokenizer))
     base_model = GPT2LMHeadModel(config).to(device)
     
     model = ImpRAGModel(base_model, b=1, t=2, k_passages=2, max_passage_len=16, pooling_type='last_token')

@@ -1,11 +1,4 @@
-import os
-import sys
 import torch
-
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-if BASE_DIR not in sys.path:
-    sys.path.insert(0, BASE_DIR)
-
 from imprag.peft_lora import LoRALinear, apply_lora_to_imprag
 from imprag.utility import DocumentUtilityScorer
 from imprag.iterative import IterativeImpRAGRetriever
@@ -24,7 +17,7 @@ def test_capstone_modules():
     
     # 1. Test PEFT / LoRA (Section 6.5 & Objective 4)
     print('[Test 1] Testing Parameter-Efficient Fine-Tuning (LoRA)...')
-    config = GPT2Config(n_layer=4, n_embd=128, n_head=4, vocab_size=128256, _attn_implementation='eager')
+    config = GPT2Config(n_layer=4, n_embd=128, n_head=4, vocab_size=128256)
     dummy_model = GPT2LMHeadModel(config).to(device)
     adapters = apply_lora_to_imprag(dummy_model, r=8, lora_alpha=16, target_modules=['c_attn'], max_layer=2)
     assert len(adapters) > 0, 'LoRA adapters should be attached'
@@ -71,11 +64,7 @@ def test_capstone_modules():
     
     # 5. Test Iterative Multi-Hop Retrieval (Section 6.3 & Objective 3)
     print('[Test 5] Testing Iterative Multi-Hop Retrieval Mechanism...')
-    ckpt_dir = os.path.join(BASE_DIR, "imp_rag_checkpoint")
-    if os.path.exists(ckpt_dir):
-        tokenizer = AutoTokenizer.from_pretrained(ckpt_dir, local_files_only=True)
-    else:
-        tokenizer = AutoTokenizer.from_pretrained("gpt2")
+    tokenizer = AutoTokenizer.from_pretrained('imp_rag_checkpoint', local_files_only=True)
     if tokenizer.pad_token is None: tokenizer.pad_token = tokenizer.eos_token
     
     adaptive_model = AdaptiveImpRAGModel(dummy_model, default_b=1, default_t=2).to(device)

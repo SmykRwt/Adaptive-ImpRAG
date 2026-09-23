@@ -1,12 +1,5 @@
-import os
-import sys
 import torch
 import numpy as np
-
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-if BASE_DIR not in sys.path:
-    sys.path.insert(0, BASE_DIR)
-
 from transformers import AutoTokenizer, GPT2LMHeadModel, GPT2Config
 from imprag.retriever import ImpRAGFAISSIndex
 from imprag.adaptive import AdaptiveImpRAGModel, AdaptiveGQAPooling, DynamicRetrievalGate, AdaptiveKAllocator, AdaptiveLayerBoundaryRouter
@@ -17,11 +10,11 @@ def run_adaptive_tests():
     print('=' * 60)
     
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
-    ckpt_dir = os.path.join(BASE_DIR, "imp_rag_checkpoint")
-    if os.path.exists(ckpt_dir):
-        tokenizer = AutoTokenizer.from_pretrained(ckpt_dir, local_files_only=True)
+    import os
+    if os.path.exists('imp_rag_checkpoint'):
+        tokenizer = AutoTokenizer.from_pretrained('imp_rag_checkpoint', local_files_only=True)
     else:
-        tokenizer = AutoTokenizer.from_pretrained('gpt2')
+        tokenizer = AutoTokenizer.from_pretrained('gpt2', local_files_only=True)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
     
@@ -74,7 +67,7 @@ def run_adaptive_tests():
     
     # 5. Test Full AdaptiveImpRAGModel Inference Pipeline
     print('[End-to-End Test] Testing Full Adaptive ImpRAG Pipeline on Toy Corpus...')
-    config = GPT2Config(n_layer=4, n_embd=128, n_head=4, vocab_size=len(tokenizer), _attn_implementation='eager')
+    config = GPT2Config(n_layer=4, n_embd=128, n_head=4, vocab_size=len(tokenizer))
     base_model = GPT2LMHeadModel(config).to(device)
     
     adaptive_model = AdaptiveImpRAGModel(base_model, default_b=1, default_t=2).to(device)

@@ -94,8 +94,6 @@ class ImpRAGModel(nn.Module):
             
         # Detect model architecture type and locate projection modules at layer b
         self.model_type, self.q_module, self.k_module = self._find_projection_modules(self.b)
-        if self.model_type == "gpt2" and hasattr(self.base_model, "config"):
-            self.base_model.config._attn_implementation = "eager"
         
         # Activations captured during forward pass
         self.captured_q = None
